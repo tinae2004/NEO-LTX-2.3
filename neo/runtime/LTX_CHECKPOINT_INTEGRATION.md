@@ -40,8 +40,11 @@ fire as downstream code consumes the returned decoded-chunk iterator.
 ## Safety and runtime behavior
 
 The callback is observational. It receives live latent-state objects and must
-not mutate them. It runs synchronously on the sampling thread; expensive network
-calls, image decoding, or blocking work in the callback will stall GPU sampling.
+not mutate or retain them: retaining references in a long-lived list keeps the
+corresponding GPU allocations alive. It runs synchronously on the sampling thread;
+expensive network calls, image decoding, or blocking work in the callback will
+stall GPU sampling. Capture compact metadata or deliberately copy only the data
+needed for a bounded CPU-side preview.
 Callback exceptions propagate and stop generation, so callers that treat
 observation as best-effort must catch and record their own errors.
 
