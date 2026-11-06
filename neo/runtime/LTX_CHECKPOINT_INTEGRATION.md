@@ -1,75 +1,71 @@
 # NEO checkpoint integration with LTX
 
-## What is now wired
+## Live sampler callback path
 
-The upstream-compatible sampler function
-`ltx_pipelines.utils.samplers.euler_denoising_loop` accepts an optional
-`step_callback`:
+The built-in deterministic Euler sampler and ancestral Euler sampler accept an
+optional callback with this signature:
 
 ```python
 Callable[[int, int, LatentState | None, LatentState | None], None]
 ```
 
-It is called after each Euler update, after both audio and video states have
-advanced. The callback receives (completed_step, total_steps, video_state,
-audio_state). This is the first real NEO hook inside the LTX audio/video
-denoising loop.
+The callback receives `(completed_step, total_steps, video_state, audio_state)`.
+It fires only after the updates for both modalities have completed. If a modality
+is absent, its state is `None`. The terminal denoised prediction is also reported.
 
-## Attach NEO to a DiffusionStage
+The chunk denoiser forwards this callback through `DiffusionStage`. The distilled
+pipeline exposes a higher-level callback on both `stream_chunks` and `__call__`:
 
 ```python
-from functools import partial
-from ltx_pipelines.utils.samplers import euler_denoising_loop
+def on_checkpoint(stage, chunk, step, total, video_state, audio_state):
+    # Record metadata or enqueue a small event. Do not mutate sampler states.
+    print(stage, chunk, step, total)
 
-def on_checkpoint(step, total, video_state, audio_state):
-    # Keep this callback lightweight. Record step/shape/device metadata.
-    # If a preview is required, decode a COPY in a separate preview path;
-    # never mutate the sampler's states here.
-    neo_runtime.record_latent_checkpoint(
-        step=step,
-        total_steps=total,
-        video_state=video_state,
-        audio_state=audio_state,
-    )
-
-result = stage(
-    denoiser=denoiser,
-    sigmas=sigmas,
-    noiser=noiser,
-    modalities=modalities,
-    loop=partial(euler_denoising_loop, step_callback=on_checkpoint),
+pipeline.stream_chunks(
+    prompt="A continuous cinematic shot",
+    seed=42,
+    height=512,
+    width=768,
+    frame_rate=24,
+    images=[],
+    num_frames=121,
+    step_callback=on_checkpoint,
 )
 ```
 
-The callback is intentionally observational. DeepSeek may return a revised
-director plan at a checkpoint, but that plan must be translated into supported
-conditioning objects and applied at a defined stage/chunk boundary. Arbitrary
-in-place latent edits are not supported.
+The pipeline callback adds stage and 1-based chunk identity. Stage names are
+`stage_1_base` and `stage_2_refine`. Because `stream_chunks` is lazy, callbacks
+fire as downstream code consumes the returned decoded-chunk iterator.
 
-## Current scope and limitations
+## Safety and runtime behavior
 
-- The callback is wired to the standard Euler denoising loop.
-- Other samplers (ancestral Euler, CFG++, gradient-estimating Euler, Res2S)
-  do not yet expose this callback.
-- The callback receives latent states, not decoded RGB frames or audio samples.
-- A decoded preview path still needs to be implemented and benchmarked.
-- The high-level distilled chunk pipeline currently calls its chunk denoiser
-  without exposing this callback. The next integration step is to thread an
-  observer option through chunk planning/denoising without breaking streaming,
-  carry-frame continuity, or audio synchronization.
-- No claim is made that DeepSeek can inspect every GPU step in real time or
-  modify model latents safely.
+The callback is observational. It receives live latent-state objects and must
+not mutate them. It runs synchronously on the sampling thread; expensive network
+calls, image decoding, or blocking work in the callback will stall GPU sampling.
+Callback exceptions propagate and stop generation, so callers that treat
+observation as best-effort must catch and record their own errors.
 
-## Recommended next implementation
+DeepSeek may return a revised director plan at a checkpoint, but that plan must
+be translated into supported conditioning objects and applied at a defined
+stage/chunk boundary. Arbitrary in-place latent edits are not supported.
+The existing `ReasoningObserver.inspect` API expects a decoded preview path;
+this sampler hook supplies latents only and does not yet decode RGB/audio previews
+or automatically call DeepSeek.
 
-1. Add the same post-update callback contract to the sampler variants actually
-   selected by the pinned LTX-2.3 checkpoint.
-2. Thread an optional NEO observer from the pipeline entrypoint through
-   `denoise_chunks` and `DiffusionStage`.
-3. Add an opt-in preview decoder that works on detached copies at sparse
-   checkpoints, with a configurable interval.
-4. Send compact preview + scene state to DeepSeek; validate its response against
-   the DirectorPlan schema.
-5. Apply approved changes only as new conditioning at a chunk/stage boundary.
-6. Add tests for synchronized callback order, absent modalities, callback errors,
-   resume behavior, and unchanged output when the callback is omitted.
+## Tests and remaining boundary
+
+CPU tests live at
+`packages/ltx-pipelines/tests/ltx_pipelines/test_sampler_callbacks.py`.
+They cover synchronized two-modality callbacks, both Euler variants, and
+video-only/audio-only callback behavior.
+
+The following still require separate implementation and validation:
+
+- A sparse preview decoder operating on detached copies, with interval and memory limits.
+- An adapter that supplies decoded previews and production state to DeepSeek.
+- Translation of approved director revisions into valid LTX conditioning at safe
+  chunk/stage boundaries.
+- Full package test/lint execution and an end-to-end run on RTX 3090 and RTX 4090.
+
+No claim is made that DeepSeek can inspect every GPU step in real time or modify
+model latents safely.
