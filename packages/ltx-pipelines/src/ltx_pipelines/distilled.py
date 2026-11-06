@@ -417,6 +417,8 @@ class DistilledPipeline:
         Each stage samples according to ``self.use_ancestral_sampler``: the ancestral (SDE) Euler
         sampler on an LTX-2.5+ checkpoint, the deterministic one below that.
         ``chunk_config=None`` plans a single chunk covering the snapped clip.
+        ``step_callback``, when supplied, receives stage name, 1-based chunk index,
+        completed step, total steps, and the current optional video/audio latent states.
         """
         chunks, num_frames, tiling_config = self.stream_chunks(
             prompt=prompt,
