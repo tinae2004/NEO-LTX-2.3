@@ -1,5 +1,5 @@
 import logging
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -96,6 +96,33 @@ ANCESTRAL_NOISE_SEED_OFFSET = 10000
 # Every pass draws from its own offset, so no two of them inject the same noise.
 ANCESTRAL_STAGE_2_NOISE_SEED_OFFSET = 20000
 
+PipelineStepCallback = Callable[
+    [str, int, int, int, LatentState | None, LatentState | None], None
+]
+
+
+def _stage_step_callback(
+    callback: PipelineStepCallback | None, stage_name: str
+) -> Callable[[int, int, LatentState | None, LatentState | None], None] | None:
+    """Attach stable stage and 1-based chunk identity to each sampler checkpoint."""
+    if callback is None:
+        return None
+
+    chunk_index = 0
+
+    def on_step(
+        step: int,
+        total_steps: int,
+        video_state: LatentState | None,
+        audio_state: LatentState | None,
+    ) -> None:
+        nonlocal chunk_index
+        if step == 1:
+            chunk_index += 1
+        callback(stage_name, chunk_index, step, total_steps, video_state, audio_state)
+
+    return on_step
+
 
 def ancestral_sampler_kwargs(seed: int, dtype: torch.dtype, noise_seed_offset: int) -> dict[str, Any]:
     """``loop`` override that samples a :class:`DiffusionStage` with ancestral Euler.
@@ -114,6 +141,7 @@ def ancestral_sampler_kwargs(seed: int, dtype: torch.dtype, noise_seed_offset: i
         denoiser: Denoiser,
         v_context: torch.Tensor | None = None,
         a_context: torch.Tensor | None = None,
+        step_callback: Callable[[int, int, LatentState | None, LatentState | None], None] | None = None,
     ) -> VideoAudio[LatentState]:
         nonlocal call_index
         result = euler_ancestral_denoising_loop(
@@ -128,6 +156,7 @@ def ancestral_sampler_kwargs(seed: int, dtype: torch.dtype, noise_seed_offset: i
             model_dtype=dtype,
             eta=ANCESTRAL_ETA,
             s_noise=ANCESTRAL_S_NOISE,
+            step_callback=step_callback,
         )
         call_index += 1
         return result
@@ -382,6 +411,7 @@ class DistilledPipeline:
         generated_keyframes: int | Sequence[int] = 0,
         decode_with_keyframes: bool = False,
         chunk_config: ChunkConfig | None = None,
+        step_callback: PipelineStepCallback | None = None,
     ) -> PipelineOutput:
         """Generate a video.
         Each stage samples according to ``self.use_ancestral_sampler``: the ancestral (SDE) Euler
@@ -406,6 +436,7 @@ class DistilledPipeline:
             generated_keyframes=generated_keyframes,
             decode_with_keyframes=decode_with_keyframes,
             chunk_config=chunk_config,
+            step_callback=step_callback,
         )
         return pipeline_output_from_chunks(chunks, num_frames=num_frames, tiling_config=tiling_config)
 
@@ -428,6 +459,7 @@ class DistilledPipeline:
         generated_keyframes: int | Sequence[int] = 0,
         decode_with_keyframes: bool = False,
         chunk_config: ChunkConfig | None = None,
+        step_callback: PipelineStepCallback | None = None,
     ) -> tuple[Iterator[PlaybackSegment], int, TilingConfig]:
         """Generate a video as a stream of decoded chunks for long clips.
         Each stage samples according to ``self.use_ancestral_sampler``, with its own noise-seed
@@ -486,6 +518,7 @@ class DistilledPipeline:
             noiser=ctx.noiser,
             fps=frame_rate,
             noise_scale=1.0,
+            step_callback=_stage_step_callback(step_callback, "stage_1_base"),
             **self._sampler_kwargs(seed, ANCESTRAL_NOISE_SEED_OFFSET),
         )
         upscaled = spatially_upsample_chunks(base, self.upsampler)
@@ -495,6 +528,7 @@ class DistilledPipeline:
             sigmas=stage_2_sigmas,
             noiser=ctx.noiser,
             fps=frame_rate,
+            step_callback=_stage_step_callback(step_callback, "stage_2_refine"),
             **self._sampler_kwargs(seed, ANCESTRAL_STAGE_2_NOISE_SEED_OFFSET),
         )
         return (
