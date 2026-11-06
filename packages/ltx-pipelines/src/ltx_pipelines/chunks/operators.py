@@ -58,6 +58,14 @@ def denoise_chunks(  # noqa: PLR0913
     """Denoise each ``Chunk`` through ``stage``, materializing conditionings and threading carry.
     ``denoiser`` (``SimpleDenoiser`` when omitted) is shared by every chunk; each chunk's positive
     context reaches it through the chunk's ``ModalitySpec``.
+
+    When supplied, ``step_callback`` receives each completed sampler step as
+    ``(step, total_steps, video_state, audio_state)`. It runs after both present
+    modalities have advanced and receives ``None`` for an absent modality.
+    The built-in deterministic Euler and the distilled pipeline's built-in
+    ancestral Euler loop support this keyword. A custom loop used with a callback
+    must accept the same keyword. The callback runs synchronously in the sampling
+    thread; it must be lightweight and must not mutate latent states.
     """
     denoiser = SimpleDenoiser() if denoiser is None else denoiser
     if step_callback is not None:
