@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from functools import partial
 from dataclasses import replace
 
 import torch
@@ -20,6 +21,7 @@ from ltx_pipelines.chunks.state import (
     VideoConditioningsWithGeneratedKeyframes,
 )
 from ltx_pipelines.utils import SimpleDenoiser, assert_stage_supports_generated_keyframes
+from ltx_pipelines.utils.samplers import euler_denoising_loop
 from ltx_pipelines.utils.blocks import (
     AudioDecoder,
     DenoisingLoop,
@@ -30,7 +32,7 @@ from ltx_pipelines.utils.blocks import (
 )
 from ltx_pipelines.utils.helpers import decode_keyframes_from_slots
 from ltx_pipelines.utils.media_io.types import PlaybackSegment
-from ltx_pipelines.utils.types import Denoiser, ModalitySpec, VideoAudio
+from ltx_pipelines.utils.types import Denoiser, LatentState, ModalitySpec, VideoAudio
 
 # Longer than the vocoder receptive field so independently decoded seams can
 # overlap-add without exposing either chunk's boundary transient.
@@ -51,12 +53,19 @@ def denoise_chunks(  # noqa: PLR0913
     denoiser: Denoiser | None = None,
     freeze_video: bool = False,
     freeze_audio: bool = False,
+    step_callback: Callable[[int, int, LatentState | None, LatentState | None], None] | None = None,
 ) -> Iterator[Chunk]:
     """Denoise each ``Chunk`` through ``stage``, materializing conditionings and threading carry.
     ``denoiser`` (``SimpleDenoiser`` when omitted) is shared by every chunk; each chunk's positive
     context reaches it through the chunk's ``ModalitySpec``.
     """
     denoiser = SimpleDenoiser() if denoiser is None else denoiser
+    if step_callback is not None:
+        # The callback contract is implemented by euler_denoising_loop. A custom
+        # loop must accept the same step_callback keyword when observation is enabled.
+        loop = partial(loop, step_callback=step_callback) if loop is not None else partial(
+            euler_denoising_loop, step_callback=step_callback
+        )
     scale = sigmas[0].item() if noise_scale is None else noise_scale
     audio_scale = scale if audio_noise_scale is None else audio_noise_scale
     carry_video: torch.Tensor | None = None
