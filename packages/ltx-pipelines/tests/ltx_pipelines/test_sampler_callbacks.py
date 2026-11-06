@@ -49,7 +49,7 @@ def _run_sampler(
     sampler: Callable[..., VideoAudio[LatentState]],
     video_state: LatentState | None,
     audio_state: LatentState | None,
-    callback: Callable[[int, int, LatentState | None, LatentState | None], None],
+    callback: Callable[[int, int, LatentState | None, LatentState | None], None] | None,
 ) -> VideoAudio[LatentState]:
     kwargs: dict[str, object] = {}
     if sampler is euler_ancestral_denoising_loop:
@@ -176,3 +176,19 @@ def test_pipeline_callback_assigns_stage_and_one_based_chunk_index() -> None:
         ("stage_1_base", 1, 2, 2),
         ("stage_1_base", 2, 1, 2),
     ]
+
+
+
+@pytest.mark.parametrize(
+    "sampler",
+    [euler_denoising_loop, euler_ancestral_denoising_loop],
+    ids=["euler", "ancestral-euler"],
+)
+def test_noop_callback_does_not_change_final_latents(sampler: Callable[..., object]) -> None:
+    baseline = _run_sampler(sampler, _latent_state(), _latent_state(2.0), None)
+    observed = _run_sampler(sampler, _latent_state(), _latent_state(2.0), lambda *_: None)
+
+    assert baseline.video is not None and observed.video is not None
+    assert baseline.audio is not None and observed.audio is not None
+    torch.testing.assert_close(baseline.video.latent, observed.video.latent)
+    torch.testing.assert_close(baseline.audio.latent, observed.audio.latent)
