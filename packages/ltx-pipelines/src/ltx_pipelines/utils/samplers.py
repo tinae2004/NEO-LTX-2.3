@@ -55,6 +55,7 @@ def euler_denoising_loop(
     denoiser: Denoiser,
     v_context: torch.Tensor | None = None,
     a_context: torch.Tensor | None = None,
+    step_callback: Callable[[int, int, LatentState | None, LatentState | None], None] | None = None,
 ) -> VideoAudio[LatentState]:
     """
     Perform the joint audio-video denoising loop over a diffusion schedule.
@@ -100,6 +101,12 @@ def euler_denoising_loop(
 
         video_state = _step_state(video_state, denoised_video, stepper, schedule.host_tensor, step_idx)
         audio_state = _step_state(audio_state, denoised_audio, stepper, schedule.host_tensor, step_idx)
+
+        # Notify only after both modalities have advanced, so observers see a
+        # consistent synchronized audio/video checkpoint. The callback must not
+        # mutate either latent state; use a separate conditioning hook for that.
+        if step_callback is not None:
+            step_callback(step_idx + 1, len(schedule.device_tensor) - 1, video_state, audio_state)
 
     return VideoAudio(video_state, audio_state)
 
