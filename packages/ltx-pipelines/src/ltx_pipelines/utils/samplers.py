@@ -580,6 +580,7 @@ def _ancestral_euler_denoising_loop(  # noqa: PLR0913
     model_dtype: torch.dtype,
     draw_noise: bool,
     make_step_fn: Callable[[DenoisedLatentResult | None, str, HostDeviceTensorPair], Callable[..., torch.Tensor]],
+    step_callback: Callable[[int, int, LatentState | None, LatentState | None], None] | None = None,
 ) -> VideoAudio[LatentState]:
     """
     Shared driver for the ancestral (noise-injecting) Euler denoising loops.
@@ -646,6 +647,11 @@ def _ancestral_euler_denoising_loop(  # noqa: PLR0913
                 x_next = post_process_latent(x_next, step.state.denoise_mask.tensor, step.state.clean_latent)
             states[step.modality] = replace(step.state, latent=x_next.to(model_dtype))
 
+        # Both modalities have completed this sampler step before observers are
+        # notified. The terminal denoised prediction is also a valid checkpoint.
+        if step_callback is not None:
+            step_callback(step_idx + 1, len(schedule.device_tensor) - 1, states["video"], states["audio"])
+
         if terminal_step:
             break
 
@@ -665,6 +671,7 @@ def euler_ancestral_denoising_loop(  # noqa: PLR0913
     model_dtype: torch.dtype = torch.bfloat16,
     eta: float = 1.0,
     s_noise: float = 1.0,
+    step_callback: Callable[[int, int, LatentState | None, LatentState | None], None] | None = None,
 ) -> VideoAudio[LatentState]:
     """
     Joint audio-video denoising loop using the ancestral (SDE) Euler sampler.
@@ -725,6 +732,7 @@ def euler_ancestral_denoising_loop(  # noqa: PLR0913
         make_step_fn=lambda _result, _modality, schedule: partial(
             stepper.step, sigmas=schedule.host_tensor, eta=eta, s_noise=s_noise
         ),
+        step_callback=step_callback,
     )
 
 
@@ -741,6 +749,7 @@ def euler_cfg_pp_denoising_loop(  # noqa: PLR0913
     model_dtype: torch.dtype = torch.bfloat16,
     eta: float = 1.0,
     s_noise: float = 1.0,
+    step_callback: Callable[[int, int, LatentState | None, LatentState | None], None] | None = None,
 ) -> VideoAudio[LatentState]:
     """
     Joint audio-video denoising loop using the CFG++ corrected Euler sampler.
@@ -815,4 +824,5 @@ def euler_cfg_pp_denoising_loop(  # noqa: PLR0913
         model_dtype=model_dtype,
         draw_noise=eta > 0 and s_noise > 0,
         make_step_fn=make_step_fn,
+        step_callback=step_callback,
     )
