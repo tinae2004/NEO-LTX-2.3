@@ -102,7 +102,7 @@ ANCESTRAL_STAGE_2_NOISE_SEED_OFFSET = 20000
 PipelineStepCallback = Callable[
     [str, int, int, int, LatentState | None, LatentState | None], None
 ]
-PipelinePreviewCallback = Callable[[str, int, Path], None]
+PipelinePreviewCallback = Callable[[str, int, Path], Any]
 
 
 def _stage_step_callback(
