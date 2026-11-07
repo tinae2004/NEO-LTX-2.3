@@ -70,14 +70,14 @@ jobs:
         run: |
           set -euo pipefail
           vastai set api-key "$VAST_API_KEY"
-          if [ "$GPU_FAMILY" = "either" ]; then
-            GPU_FILTER="(gpu_name=RTX_3090 OR gpu_name=RTX_4090)"
-          else
-            GPU_FILTER="gpu_name=$GPU_FAMILY"
-          fi
-          QUERY="$GPU_FILTER num_gpus=1 rentable=true verified=true gpu_ram>=24000 dph_total<=$MAX_HOURLY_USD"
           echo "Searching verified RTX offers within compute cap..."
-          OFFERS="$(vastai search offers "$QUERY" -o "dph_total" --raw)"
+          if [ "$GPU_FAMILY" = "either" ]; then
+            A="$(vastai search offers "gpu_name=RTX_3090 num_gpus=1 rentable=true verified=true gpu_ram>=24000 dph_total<=$MAX_HOURLY_USD" -o "dph_total" --raw)"
+            B="$(vastai search offers "gpu_name=RTX_4090 num_gpus=1 rentable=true verified=true gpu_ram>=24000 dph_total<=$MAX_HOURLY_USD" -o "dph_total" --raw)"
+            OFFERS="$(python -c 'import json,sys; a=json.loads(sys.argv[1]); b=json.loads(sys.argv[2]); a=a if isinstance(a,list) else a.get("offers",[]); b=b if isinstance(b,list) else b.get("offers",[]); print(json.dumps(a+b))' "$A" "$B")"
+          else
+            OFFERS="$(vastai search offers "gpu_name=$GPU_FAMILY num_gpus=1 rentable=true verified=true gpu_ram>=24000 dph_total<=$MAX_HOURLY_USD" -o "dph_total" --raw)"
+          fi
           python - "$OFFERS" "$MAX_HOURLY_USD" <<'PY' > selected_offer.txt
           import json, sys
           raw, cap = sys.argv[1], float(sys.argv[2])
@@ -91,9 +91,11 @@ jobs:
                   ram = float(x.get("gpu_ram", 0))
                   down = float(x.get("inet_down", 0) or 0)
                   up = float(x.get("inet_up", 0) or 0)
+                  bandwidth = float(x.get("bw", 0) or 0)
+                  storage = float(x.get("storage_cost", 0) or 0)
                   if price <= cap and ram >= 24000 and x.get("verified") and x.get("rentable"):
-                      # Prefer fast network, then lower total hourly compute price.
-                      score = (down + up) - (price * 100)
+                      # Prioritise network speed, then compute, bandwidth and storage costs.
+                      score = (down + up) - (price * 100) - (bandwidth * 1000) - (storage * 100)
                       candidates.append((score, x))
               except (TypeError, ValueError):
                   pass
@@ -102,7 +104,7 @@ jobs:
           candidates.sort(key=lambda z: z[0], reverse=True)
           best = candidates[0][1]
           print(best["id"])
-          print(f"Selected {best.get('gpu_name')} | {best.get('gpu_ram')} MB | ${best.get('dph_total')}/h compute | down {best.get('inet_down')} Mbps | up {best.get('inet_up')} Mbps", file=sys.stderr)
+          print(f"Selected {best.get('gpu_name')} | {best.get('gpu_ram')} MB | ${best.get('dph_total')}/h compute | down {best.get('inet_down')} Mbps | up {best.get('inet_up')} Mbps | bandwidth {best.get('bw')} | storage {best.get('storage_cost')}", file=sys.stderr)
           PY
           OFFER_ID="$(head -n1 selected_offer.txt)"
           echo "offer_id=$OFFER_ID" >> "$GITHUB_OUTPUT"
