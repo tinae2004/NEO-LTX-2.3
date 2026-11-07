@@ -14,6 +14,7 @@ from neo.director.client import DeepSeekDirector
 from neo.runtime.observer import ReasoningObserver, ReasoningPreviewAdapter
 from neo.runtime.previews import VideoPreviewWriter
 from neo.runtime.state import ProductionState
+from ltx_pipelines.distilled import _director_plan_prompt
 
 
 class _FakeVideoDecoder:
@@ -142,3 +143,33 @@ def test_deepseek_client_attaches_preview_as_real_vision_input(
     encoded = data_url.split(",", 1)[1]
     assert base64.b64decode(encoded) == preview.read_bytes()
     assert image_part["image_url"]["detail"] == "low"
+
+
+
+def test_director_plan_prompt_carries_visual_motion_camera_and_audio() -> None:
+    prompt = _director_plan_prompt({
+        "visual_prompt": "A woman stands beside a red car.",
+        "motion_direction": "She opens the driver's door.",
+        "camera_direction": "Slow dolly from a medium shot.",
+        "audio": {
+            "dialogue": ["I am leaving now."],
+            "sound_effects": ["Car door latch clicks."],
+            "music": "Soft cinematic strings.",
+            "ambience": "Quiet evening street.",
+        },
+        "continuity_notes": ["Keep the red car on screen left."],
+    })
+
+    assert "Visual direction: A woman stands beside a red car." in prompt
+    assert "Action and motion: She opens the driver's door." in prompt
+    assert "Camera direction: Slow dolly from a medium shot." in prompt
+    assert "Dialogue: I am leaving now." in prompt
+    assert "Sound effects: Car door latch clicks." in prompt
+    assert "Music: Soft cinematic strings." in prompt
+    assert "Ambience: Quiet evening street." in prompt
+    assert "Keep the red car on screen left." in prompt
+
+
+def test_director_plan_prompt_rejects_empty_plan() -> None:
+    with pytest.raises(ValueError, match="no usable"):
+        _director_plan_prompt({})
