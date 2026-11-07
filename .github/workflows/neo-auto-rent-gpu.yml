@@ -57,6 +57,15 @@ jobs:
           for x in offers:
             name=str(x.get("gpu_name") or "").upper()
             if name not in ("RTX 3090","RTX 4090"): rejected["wrong_gpu"]+=1; continue
+            # Permanently reject provider hardware previously observed stuck in boot/SSL failure.
+            bad_hosts={"513108"}
+            bad_machines={"144733"}
+            host_id=str(x.get("host_id") or "")
+            machine_id=str(x.get("machine_id") or "")
+            if host_id in bad_hosts or machine_id in bad_machines:
+              rejected["previously_failed_hardware"] = rejected.get("previously_failed_hardware",0)+1
+              print("RED-FLAG PREVIOUSLY FAILED PROVIDER — reject offer",x.get("id"),"| host_id:",host_id,"| machine_id:",machine_id)
+              continue
             geo=str(x.get("geolocation") or "").strip()
             country=geo.rsplit(",",1)[-1].strip().upper() if "," in geo else ""
             if country in {"CN","CHINA"}:
