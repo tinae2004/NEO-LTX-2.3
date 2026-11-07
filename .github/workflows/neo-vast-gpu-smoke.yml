@@ -36,6 +36,7 @@ jobs:
     timeout-minutes: 35
     env:
       VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      NEO_WORKER_SECRET: ${{ secrets.NEO_WORKER_SECRET }}
       MAX_HOURLY_USD: ${{ inputs.max_hourly_usd }}
       GPU_FAMILY: ${{ inputs.gpu_family }}
       KEEP_GPU: ${{ inputs.keep_gpu }}
@@ -55,6 +56,8 @@ jobs:
               raise SystemExit("Budget must be > 0 and <= $0.40/hour.")
           if not os.environ.get("VAST_API_KEY"):
               raise SystemExit("Missing GitHub Actions secret VAST_API_KEY.")
+          if not os.environ.get("NEO_WORKER_SECRET") or len(os.environ["NEO_WORKER_SECRET"]) < 32:
+              raise SystemExit("NEO_WORKER_SECRET must be set and at least 32 characters.")
           PY
 
       - name: Install Vast CLI and SSH client
@@ -108,7 +111,7 @@ jobs:
           PY
           OFFER_ID="$(head -n1 selected_offer.txt)"
           echo "offer_id=$OFFER_ID" >> "$GITHUB_OUTPUT"
-          vastai create instance "$OFFER_ID" --image "pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime" --disk 80 --ssh --label "NEO-GPU-SMOKE-${GITHUB_RUN_ID}"
+          vastai create instance "$OFFER_ID" --image "pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime" --disk 100 --ssh --direct --cancel-unavail --env "-e NEO_WORKER_SECRET=$NEO_WORKER_SECRET -e NEO_WORKER_ROOT=/workspace/NEO-LTX-2.3 -e NEO_WORKER_STATE=/workspace/neo-state -e NEO_REPO_BRANCH=neo-reasoning-dev -p 8765:8765" --onstart ./neo/worker/onstart.sh --label "NEO-GPU-SMOKE-${GITHUB_RUN_ID}"
           sleep 3
           INSTANCE_ID="$(vastai show instances --raw | python -c 'import json,sys; a=json.load(sys.stdin); a=a if isinstance(a,list) else a.get("instances",[]); xs=[x for x in a if str(x.get("label","")).endswith("'"$GITHUB_RUN_ID"'")]; print(xs[-1]["id"] if xs else "")')"
           if [ -z "$INSTANCE_ID" ]; then
@@ -146,6 +149,38 @@ jobs:
           done
           echo "SSH connected but CUDA verification did not pass."; exit 1
 
+
+      - name: Verify worker API is alive and authenticated
+        shell: bash
+        run: |
+          set -euo pipefail
+          INSTANCE_ID="$(cat instance_id.txt)"
+          API_URL=""
+          for i in $(seq 1 90); do
+            INSTANCE="$(vastai show instance "$INSTANCE_ID" --raw 2>/dev/null || true)"
+            API_URL="$(python - "$INSTANCE" <<'PY'
+          import json,sys
+          try:
+              d=json.loads(sys.argv[1])
+              ip=d.get("public_ipaddr") or d.get("public_ip")
+              ports=d.get("ports") or {}
+              entries=ports.get("8765/tcp") or ports.get("8765") or []
+              if isinstance(entries,dict): entries=[entries]
+              port=(entries[0].get("HostPort") or entries[0].get("host_port")) if entries else None
+              if ip and port: print("http://{}:{}".format(ip,port))
+          except Exception: pass
+          PY
+          )"
+            if [ -n "$API_URL" ] && curl -fsS --max-time 5 "$API_URL/health" >/dev/null; then
+              echo "NEO worker API is responding."
+              curl -fsS --max-time 10 -H "Authorization: Bearer $NEO_WORKER_SECRET" "$API_URL/v1/gpu" | tee worker-gpu.json
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "Worker API did not become reachable within 30 minutes."
+          exit 1
+
       - name: Upload test summary
         if: always()
         uses: actions/upload-artifact@v4
@@ -154,6 +189,7 @@ jobs:
           path: |
             instance_id.txt
             selected_offer.txt
+            worker-gpu.json
           if-no-files-found: ignore
           retention-days: 7
 
