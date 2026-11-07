@@ -39,7 +39,7 @@ jobs:
       - name: Validate budget and secrets
         run: |
           set -euo pipefail
-          python -c 'import os; c=float(os.environ["MAX_HOURLY_USD"]); b=float(os.environ["MAX_BANDWIDTH_USD_PER_GB"]); assert 0<c<=0.40, "Budget must not exceed $0.40/h"; assert 0<b<=0.01, "Bandwidth cap must be >0 and <= $0.01/GB"; assert os.environ.get("VAST_API_KEY"); assert len(os.environ.get("NEO_WORKER_SECRET",""))>=32; assert os.environ.get("HF_TOKEN"), "Add HF_TOKEN GitHub Actions secret after accepting the LTX-2.3 and Gemma model terms"'
+          python -c 'import os; c=float(os.environ["MAX_HOURLY_USD"]); b=float(os.environ["MAX_BANDWIDTH_USD_PER_GB"]); assert 0<c<=0.40, "Budget must not exceed $0.40/h"; assert 0<b<=0.03, "Bandwidth cap must be >0 and <= $0.03/GB"; assert os.environ.get("VAST_API_KEY"); assert len(os.environ.get("NEO_WORKER_SECRET",""))>=32; assert os.environ.get("HF_TOKEN"), "Add HF_TOKEN GitHub Actions secret after accepting the LTX-2.3 and Gemma model terms"'
       - name: Install tools
         run: |
           python -m pip install --upgrade requests vastai huggingface_hub
