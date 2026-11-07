@@ -135,7 +135,7 @@ def _director_plan_prompt(plan: dict[str, Any]) -> str:
                     if isinstance(item, str) and item.strip()
                 )
         if audio_lines:
-            sections.append("Audio direction:\\n" + "\\n".join(audio_lines))
+            sections.append("Audio direction:\n" + "\n".join(audio_lines))
 
     notes = plan.get("continuity_notes", [])
     if isinstance(notes, list):
@@ -145,7 +145,7 @@ def _director_plan_prompt(plan: dict[str, Any]) -> str:
 
     if not sections:
         raise ValueError("Director plan contains no usable visual, motion, camera, or audio direction")
-    return "\\n\\n".join(sections)
+    return "\n\n".join(sections)
 
 
 def _stage_step_callback(
