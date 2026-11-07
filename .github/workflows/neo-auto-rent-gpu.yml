@@ -81,7 +81,7 @@ jobs:
         run: |
           set -euo pipefail
           ID="${{ steps.rent.outputs.instance_id }}"; URL=$(vastai ssh-url "$ID"); HOST=$(echo "$URL" | sed -E 's#ssh://[^@]+@([^:]+):.*#\\1#'); PORT=$(echo "$URL" | sed -E 's#.*:([0-9]+)$#\\1#')
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'python -m pip install --upgrade uv pytest huggingface_hub && cd /workspace/NEO-LTX-2.3 && uv sync --frozen'
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'python -m pip install --upgrade uv pytest huggingface_hub && cd /workspace/NEO-LTX-2.3 && uv sync'
           echo "Running Shona, LTX sampler callback, checkpoint, and preview tests."
           ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'cd /workspace/NEO-LTX-2.3 && uv run --no-sync pytest -q neo/speech/test_dialogue.py packages/ltx-pipelines/tests/ltx_pipelines/test_sampler_callbacks.py packages/ltx-pipelines/tests/ltx_pipelines/test_previews.py'
       - name: Download Gemma 3 text encoder
