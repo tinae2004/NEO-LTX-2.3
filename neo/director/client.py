@@ -30,7 +30,7 @@ class DeepSeekDirector:
 
     Configure DEEPSEEK_API_KEY. Optional overrides:
     DEEPSEEK_BASE_URL (default https://api.deepseek.com),
-    DEEPSEEK_MODEL (default deepseek-chat).
+    DEEPSEEK_MODEL (default deepseek-flash, which accepts image inputs).
     """
 
     def __init__(self, api_key: str | None = None, model: str | None = None,
@@ -59,19 +59,27 @@ class DeepSeekDirector:
         ) or production_state.get("last_preview_path")
         if preview_path:
             image_path = Path(str(preview_path))
-            if image_path.is_file():
-                image_size = image_path.stat().st_size
-                if image_size > 32 * 1024 * 1024:
-                    raise DeepSeekDirectorError(
-                        "Preview image exceeds DeepSeek's 32 MiB inline image limit."
-                    )
-                mime_type = mimetypes.guess_type(image_path.name)[0] or "image/png"
-                if mime_type not in {"image/jpeg", "image/png", "image/gif", "image/webp"}:
-                    raise DeepSeekDirectorError(
-                        f"Unsupported preview image type for DeepSeek vision: {mime_type}"
-                    )
-                encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
-                user_content = [
+            if not image_path.is_file():
+                raise DeepSeekDirectorError(
+                    f"Preview image does not exist: {image_path}"
+                )
+            mime_type = mimetypes.guess_type(image_path.name)[0] or "image/png"
+            if mime_type not in {"image/jpeg", "image/png", "image/gif", "image/webp"}:
+                raise DeepSeekDirectorError(
+                    f"Unsupported preview image type for DeepSeek vision: {mime_type}"
+                )
+            try:
+                image_bytes = image_path.read_bytes()
+            except OSError as exc:
+                raise DeepSeekDirectorError(
+                    f"Could not read preview image {image_path}: {exc}"
+                ) from exc
+            if len(image_bytes) > 32 * 1024 * 1024:
+                raise DeepSeekDirectorError(
+                    "Preview image exceeds DeepSeek's 32 MiB inline image limit."
+                )
+            encoded = base64.b64encode(image_bytes).decode("ascii")
+            user_content = [
                     {"type": "text", "text": user_text},
                     {
                         "type": "image_url",
