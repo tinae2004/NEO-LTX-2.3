@@ -38,4 +38,49 @@ The Shona TTS model must be loaded sequentially with the LTX transformer/decoder
 
 ## Current implementation status
 
-This document defines the integration contract; it does not claim that a Shona TTS backend, model download, fine-tuning run, lip-sync alignment or 24 GB end-to-end test has already been implemented. The next implementation step is a backend adapter plus a pinned model manifest, followed by native-speaker evaluation and RTX 3090/4090 testing.
+## Implemented integration modules
+
+- `f5_shona.py`: optional, lazy F5-TTS inference backend. It loads the published OpenBible Shona checkpoint only when requested and can unload it before LTX runs.
+- `dialogue.py`: renders timestamped Shona dialogue turns, unloads the TTS backend, mixes WAV tracks on CPU with optional soundtrack ducking, and muxes the final WAV into an MP4 with FFmpeg.
+- `test_dialogue.py`: unit tests for turn ordering, GPU-model unload invocation, timestamp placement and soundtrack ducking.
+- `requirements.txt`: optional speech dependencies, intentionally separate from the core LTX install.
+
+Example orchestration:
+
+```python
+from pathlib import Path
+from neo.speech.f5_shona import F5ShonaTTS, ShonaVoice
+from neo.speech.dialogue import (
+    DialogueTurn, render_shona_dialogue, mix_dialogue_wav,
+    mux_video_with_shona_audio,
+)
+
+tts = F5ShonaTTS(ShonaVoice(
+    reference_audio=Path("voices/approved_shona_reference.wav"),
+    reference_text="Mhinduro chaiyo yakanyorwa sezvayakataurwa.",
+))
+turns = [
+    DialogueTurn("Mangwanani, makadii nhasi?", start_seconds=1.2),
+    DialogueTurn("Tiri kufara kukuonai.", start_seconds=3.8),
+]
+rendered = render_shona_dialogue(turns, synthesizer=tts, output_dir="work/shona")
+mixed = mix_dialogue_wav(
+    rendered, output_path="work/shona_mix.wav",
+    soundtrack_path="work/ltx_soundtrack.wav",
+)
+mux_video_with_shona_audio(
+    "work/ltx_video.mp4", mixed, "output/neo_shona.mp4",
+)
+```
+
+Install speech dependencies in a separate worker/environment with
+`pip install -r neo/speech/requirements.txt`. FFmpeg must be installed on the
+worker that performs final muxing. The voice reference must be a clean 5–10
+second recording from a speaker who has consented to its use; its transcript
+must match exactly.
+
+This is code-level integration, not a completed runtime validation. The model
+download, real inference, audio quality, FFmpeg mux, tests, and full RTX
+3090/4090 24 GB run still need execution in the target environment. The
+OpenBible model is read-speech trained, so native-speaker listening tests are
+required before describing it as natural conversational Zimbabwean Shona.
