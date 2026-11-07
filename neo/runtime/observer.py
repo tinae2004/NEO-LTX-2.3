@@ -42,6 +42,7 @@ class ReasoningObserver:
         plan = self.director.plan(brief, state)
         return plan.model_dump()
 
+
 class ReasoningPreviewAdapter:
     """Send sparse decoded stage previews and production state to DeepSeek.
 
