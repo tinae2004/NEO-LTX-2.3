@@ -121,7 +121,11 @@ jobs:
         run: |
           set -euo pipefail
           echo "Creating a clean CUDA terminal only. No NEO setup or model downloads run during boot."
-          vastai create instance "${{ steps.select.outputs.offer_id }}" --image "nvidia/cuda:12.4.1-devel-ubuntu22.04" --disk 200 --ssh --direct --cancel-unavail --label "NEO-AUTO-${GITHUB_RUN_ID}" > /tmp/neo-vast-create.log 2>&1 || { echo "Vast create failed; inspect account inventory."; exit 1; }
+          # Match the proven NEO app SSH bootstrap: create a keypair, rent, then
+          # attach the public key to the exact provider instance ID before ssh-url.
+          install -d -m 700 ~/.ssh
+          ssh-keygen -t ed25519 -N "" -f ~/.ssh/neo_vast_ed25519
+          vastai create instance "${{ steps.select.outputs.offer_id }}" --image "nvidia/cuda:12.4.1-devel-ubuntu22.04" --disk 200 --ssh --cancel-unavail --label "NEO-AUTO-${GITHUB_RUN_ID}" > /tmp/neo-vast-create.log 2>&1 || { cat /tmp/neo-vast-create.log; echo "Vast create failed; inspect account inventory."; exit 1; }
           for i in $(seq 1 24); do
             ID=$(vastai show instances --raw | python -c 'import json,sys; a=json.load(sys.stdin); a=a if isinstance(a,list) else a.get("instances",[]); z=[x for x in a if str(x.get("label"," ")).endswith("'"$GITHUB_RUN_ID"'")]; print(z[-1]["id"] if z else "")')
             [ -n "$ID" ] && break
@@ -130,6 +134,16 @@ jobs:
           test -n "${ID:-}" || { echo "Instance ID unresolved; check Vast inventory for NEO-AUTO-${GITHUB_RUN_ID}"; exit 1; }
           echo "$ID" > instance_id.txt
           echo "instance_id=$ID" >> "$GITHUB_OUTPUT"
+          echo "Provider inventory confirms exact instance ID: $ID"
+          PUBKEY="$(cat ~/.ssh/neo_vast_ed25519.pub)"
+          ATTACHED=0
+          for attempt in $(seq 1 6); do
+            if vastai attach ssh "$ID" "$PUBKEY"; then ATTACHED=1; break; fi
+            echo "SSH key attach attempt $attempt/6 not ready; retrying"
+            sleep 5
+          done
+          [ "$ATTACHED" = "1" ] || { echo "Could not attach SSH public key to exact instance $ID"; exit 1; }
+          echo "SSH public key attached to exact instance $ID"
           echo "RAW CUDA INSTANCE RENTED: $ID"
       - name: Monitor boot and CUDA (12-minute hard limit)
         run: |
@@ -144,7 +158,7 @@ jobs:
               PORT=$(python -c 'from urllib.parse import urlparse; import sys; print(urlparse(sys.argv[1]).port or "")' "$URL")
               mkdir -p ~/.ssh
               ssh-keygen -R "[$HOST]:$PORT" >/dev/null 2>&1 || true
-              if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 -p "$PORT" root@"$HOST" 'nvidia-smi'; then
+              if ssh -i ~/.ssh/neo_vast_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 -p "$PORT" root@"$HOST" 'nvidia-smi'; then
                 echo "GPU BOOTED — NVIDIA DRIVER VERIFIED"
                 exit 0
               fi
@@ -161,7 +175,7 @@ jobs:
           HOST=$(python -c 'from urllib.parse import urlparse; import sys; print(urlparse(sys.argv[1]).hostname or "")' "$URL")
           PORT=$(python -c 'from urllib.parse import urlparse; import sys; print(urlparse(sys.argv[1]).port or "")' "$URL")
           echo "GPU passed SSH and nvidia-smi. Now installing OS tools and cloning NEO source."
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y git python3 python3-pip python3-venv ffmpeg aria2 build-essential && mkdir -p /workspace && git clone --depth 1 --branch neo-reasoning-dev https://github.com/tinae2004/NEO-LTX-2.3.git /workspace/NEO-LTX-2.3 && python3 -m pip install --upgrade pip uv huggingface_hub pytest'
+          ssh -i ~/.ssh/neo_vast_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y git python3 python3-pip python3-venv ffmpeg aria2 build-essential && mkdir -p /workspace && git clone --depth 1 --branch neo-reasoning-dev https://github.com/tinae2004/NEO-LTX-2.3.git /workspace/NEO-LTX-2.3 && python3 -m pip install --upgrade pip uv huggingface_hub pytest'
           echo "NEO source cloned and base dependencies installed after successful GPU boot."
       - name: Download LTX-2.3 checkpoint and spatial upscaler
         run: |
@@ -191,7 +205,7 @@ jobs:
           ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'test -s /workspace/neo-state/test-output/neo-ltx23-smoke.mp4 && ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 /workspace/neo-state/test-output/neo-ltx23-smoke.mp4'
           echo "PASS: a real LTX-2.3 MP4 was generated and ffprobe validated it."
           mkdir -p test-artifacts
-          scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P "$PORT" root@"$HOST":/workspace/neo-state/test-output/neo-ltx23-smoke.mp4 test-artifacts/neo-ltx23-smoke.mp4
+          scp -i ~/.ssh/neo_vast_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P "$PORT" root@"$HOST":/workspace/neo-state/test-output/neo-ltx23-smoke.mp4 test-artifacts/neo-ltx23-smoke.mp4
       - name: Upload deployment record
         if: always()
         uses: actions/upload-artifact@v4
