@@ -418,6 +418,7 @@ class DistilledPipeline:
         step_callback: PipelineStepCallback | None = None,
         preview_callback: PipelinePreviewCallback | None = None,
         preview_directory: str | Path | None = None,
+        preview_every_n_chunks: int = 1,
     ) -> PipelineOutput:
         """Generate a video.
         Each stage samples according to ``self.use_ancestral_sampler``: the ancestral (SDE) Euler
@@ -447,6 +448,7 @@ class DistilledPipeline:
             step_callback=step_callback,
             preview_callback=preview_callback,
             preview_directory=preview_directory,
+            preview_every_n_chunks=preview_every_n_chunks,
         )
         return pipeline_output_from_chunks(chunks, num_frames=num_frames, tiling_config=tiling_config)
 
@@ -472,6 +474,7 @@ class DistilledPipeline:
         step_callback: PipelineStepCallback | None = None,
         preview_callback: PipelinePreviewCallback | None = None,
         preview_directory: str | Path | None = None,
+        preview_every_n_chunks: int = 1,
     ) -> tuple[Iterator[PlaybackSegment], int, TilingConfig]:
         """Generate a video as a stream of decoded chunks for long clips.
         Each stage samples according to ``self.use_ancestral_sampler``, with its own noise-seed
@@ -484,6 +487,9 @@ class DistilledPipeline:
         actually decode to, which floors ``num_frames`` to the causal grid the same way the
         plan does.
         """
+        if preview_every_n_chunks < 1:
+            raise ValueError("preview_every_n_chunks must be >= 1")
+
         ctx = self._prepare_run(
             prompt=prompt,
             seed=seed,
@@ -535,7 +541,12 @@ class DistilledPipeline:
         )
 
         def emit_preview(chunk_index: int, video_state: LatentState | None) -> None:
-            if preview_writer is None or preview_callback is None or video_state is None:
+            if (
+                preview_writer is None
+                or preview_callback is None
+                or video_state is None
+                or chunk_index % preview_every_n_chunks
+            ):
                 return
             preview_path = preview_writer("stage_2_refine", chunk_index, video_state.latent)
             preview_callback("stage_2_refine", chunk_index, preview_path)
