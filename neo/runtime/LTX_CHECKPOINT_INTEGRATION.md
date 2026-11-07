@@ -62,9 +62,37 @@ CPU tests live at
 They cover synchronized two-modality callbacks, both Euler variants, and
 video-only/audio-only callback behavior.
 
+## Bounded latent checkpoint capture
+
+`neo.runtime.checkpoints.LatentCheckpointStore` can be passed directly as the
+pipeline callback. It captures every configured Nth step plus the final step,
+copies only the video/audio latent tensors to CPU, writes atomically, and prunes
+older snapshots to a configured maximum. It does not retain GPU tensor references.
+
+Example:
+
+```python
+from neo.runtime.checkpoints import LatentCheckpointStore
+
+checkpoint_store = LatentCheckpointStore(
+    "neo_vault/checkpoints",
+    every_n_steps=4,
+    max_snapshots=8,
+)
+pipeline.stream_chunks(..., step_callback=checkpoint_store)
+```
+
+Important: these saved tensors are still patchified sampler tokens, not RGB
+frames and not directly VAE-decodable. The checkpoint consumer must reconstruct
+the correct chunk target shape, clear extra conditioning tokens, and unpatchify
+with the matching `VideoLatentTools` before passing video latents to the VAE.
+Audio latents likewise require their matching audio decode path. The capture
+writes synchronously and can briefly stall sampling while copying/saving; use a
+sparse interval and fast local storage.
+
 The following still require separate implementation and validation:
 
-- A sparse preview decoder operating on detached copies, with interval and memory limits.
+- A shape-aware unpatchify + sparse preview decoder operating on detached copies, with interval and memory limits.
 - An adapter that supplies decoded previews and production state to DeepSeek.
 - Translation of approved director revisions into valid LTX conditioning at safe
   chunk/stage boundaries.
