@@ -1,9 +1,12 @@
 import logging
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import torch
+
+from neo.runtime.previews import VideoPreviewWriter
 
 from ltx_core.allocator_trim_strategy import AllocatorTrimStrategy
 from ltx_core.components.noisers import GaussianNoiser
@@ -99,6 +102,7 @@ ANCESTRAL_STAGE_2_NOISE_SEED_OFFSET = 20000
 PipelineStepCallback = Callable[
     [str, int, int, int, LatentState | None, LatentState | None], None
 ]
+PipelinePreviewCallback = Callable[[str, int, Path], None]
 
 
 def _stage_step_callback(
@@ -412,6 +416,8 @@ class DistilledPipeline:
         decode_with_keyframes: bool = False,
         chunk_config: ChunkConfig | None = None,
         step_callback: PipelineStepCallback | None = None,
+        preview_callback: PipelinePreviewCallback | None = None,
+        preview_directory: str | Path | None = None,
     ) -> PipelineOutput:
         """Generate a video.
         Each stage samples according to ``self.use_ancestral_sampler``: the ancestral (SDE) Euler
@@ -439,6 +445,8 @@ class DistilledPipeline:
             decode_with_keyframes=decode_with_keyframes,
             chunk_config=chunk_config,
             step_callback=step_callback,
+            preview_callback=preview_callback,
+            preview_directory=preview_directory,
         )
         return pipeline_output_from_chunks(chunks, num_frames=num_frames, tiling_config=tiling_config)
 
@@ -462,6 +470,8 @@ class DistilledPipeline:
         decode_with_keyframes: bool = False,
         chunk_config: ChunkConfig | None = None,
         step_callback: PipelineStepCallback | None = None,
+        preview_callback: PipelinePreviewCallback | None = None,
+        preview_directory: str | Path | None = None,
     ) -> tuple[Iterator[PlaybackSegment], int, TilingConfig]:
         """Generate a video as a stream of decoded chunks for long clips.
         Each stage samples according to ``self.use_ancestral_sampler``, with its own noise-seed
@@ -513,6 +523,23 @@ class DistilledPipeline:
             generated_keyframes=generated_keyframes,
         )
 
+        preview_writer = (
+            VideoPreviewWriter(
+                self.video_decoder,
+                preview_directory if preview_directory is not None else "neo_vault/previews",
+                tiling_config=ctx.tiling_config,
+                dtype=ctx.vae_dtype,
+            )
+            if preview_callback is not None
+            else None
+        )
+
+        def emit_preview(chunk_index: int, video_state: LatentState | None) -> None:
+            if preview_writer is None or preview_callback is None or video_state is None:
+                return
+            preview_path = preview_writer("stage_2_refine", chunk_index, video_state.latent)
+            preview_callback("stage_2_refine", chunk_index, preview_path)
+
         base = denoise_chunks(
             chunks,
             self.stage,
@@ -531,6 +558,7 @@ class DistilledPipeline:
             noiser=ctx.noiser,
             fps=frame_rate,
             step_callback=_stage_step_callback(step_callback, "stage_2_refine"),
+            preview_callback=emit_preview if preview_writer is not None else None,
             **self._sampler_kwargs(seed, ANCESTRAL_STAGE_2_NOISE_SEED_OFFSET),
         )
         return (
