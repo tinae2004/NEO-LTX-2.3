@@ -7,7 +7,7 @@ Implemented runtime pieces:
 - unpatchified, post-stage RGB preview decoding at a safe VAE boundary
 - optional DeepSeek visual review with production-state persistence
 
-The distilled pipeline's optional `preview_callback` runs after each selected stage-2 chunk has completed and its transformer context has exited. `preview_every_n_chunks` controls preview frequency. Decoded images are written to a bounded preview directory and passed to the callback.
+The distilled pipeline's optional `preview_callback` runs after each selected stage-2 chunk has completed and its transformer context has exited. `preview_every_n_chunks` controls preview frequency. A first/last-frame contact sheet is written to a bounded preview directory and passed to the callback.
 
 `ReasoningPreviewAdapter` can be passed directly as that callback. It sends the preview and production state to DeepSeek, then stores the resulting DirectorPlan. DeepSeek calls are synchronous between chunks, so they pause progression to the next chunk.
 
