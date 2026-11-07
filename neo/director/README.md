@@ -6,4 +6,4 @@ When the production state includes a decoded `preview_path`, the client reads th
 
 The director emits a structured plan. It does not directly produce LTX embeddings. The upstream Gemma encoder remains responsible for converting text into the conditioning representation expected by the pretrained LTX model until a learned replacement adapter is trained and evaluated.
 
-The plan schema accepts up to 50 timestamped reference guides. The current preview adapter persists returned plans for review; it does not yet translate plan changes into LTX conditioning or automatically apply references to later chunks.
+The plan schema accepts up to 50 timestamped reference guides. When `apply_director_plans=True`, visual, motion, camera and audio directions are re-encoded by the existing Gemma PromptEncoder and become the text context for subsequent stage-2 chunks. Reference-image guides are retained in the plan but are not yet applied as image conditionings.
