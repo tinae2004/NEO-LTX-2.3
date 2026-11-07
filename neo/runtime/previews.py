@@ -17,7 +17,7 @@ from PIL import Image
 
 
 class VideoPreviewWriter:
-    """Decode one representative frame per completed chunk and bound disk usage.
+    """Decode first/last frames per completed chunk and bound disk usage.
 
     The input must be an unpatchified (B, C, T, H, W) video latent from
     DiffusionStage. Sampler callback tokens are not accepted here.
@@ -42,7 +42,7 @@ class VideoPreviewWriter:
         self._saved: list[Path] = []
 
     def __call__(self, stage: str, chunk: int, video_latent: torch.Tensor) -> Path:
-        """Decode a completed chunk and atomically publish its middle frame as PNG."""
+        """Decode a completed chunk and publish a first/last-frame contact sheet."""
         if chunk < 1:
             raise ValueError("chunk must be >= 1")
         if video_latent.ndim != 5:
@@ -71,18 +71,26 @@ class VideoPreviewWriter:
                 f"received shape {tuple(frames.shape)}"
             )
 
-        frame = frames[frames.shape[0] // 2].detach().to(device="cpu")
-        if frame.is_floating_point():
-            frame = frame.float()
-            minimum = float(frame.min())
-            maximum = float(frame.max())
+        endpoints = torch.stack(
+            (frames[0], frames[-1]),
+            dim=0,
+        ).detach().to(device="cpu")
+        if endpoints.is_floating_point():
+            endpoints = endpoints.float()
+            minimum = float(endpoints.min())
+            maximum = float(endpoints.max())
             if minimum < -0.01:
-                frame = (frame + 1.0) / 2.0
+                endpoints = (endpoints + 1.0) / 2.0
             elif maximum > 1.0:
-                frame = frame / 255.0
-            frame = (frame.clamp(0.0, 1.0) * 255.0).round().to(torch.uint8)
+                endpoints = endpoints / 255.0
+            endpoints = (
+                endpoints.clamp(0.0, 1.0) * 255.0
+            ).round().to(torch.uint8)
         else:
-            frame = frame.clamp(0, 255).to(torch.uint8)
+            endpoints = endpoints.clamp(0, 255).to(torch.uint8)
+
+        # Left panel is the first decoded frame; right panel is the last.
+        contact_sheet = torch.cat((endpoints[0], endpoints[1]), dim=1)
 
         self.directory.mkdir(parents=True, exist_ok=True)
         filename = f"{safe_stage}_chunk{chunk:04d}.png"
@@ -92,7 +100,7 @@ class VideoPreviewWriter:
         )
         os.close(fd)
         try:
-            Image.fromarray(frame.contiguous().numpy(), mode="RGB").save(
+            Image.fromarray(contact_sheet.contiguous().numpy(), mode="RGB").save(
                 temporary, format="PNG"
             )
             os.replace(temporary, destination)
