@@ -53,10 +53,16 @@ jobs:
           r=requests.get("https://cloud.vast.ai/api/v0/bundles/",headers={"Authorization":"Bearer "+os.environ["VAST_API_KEY"]},params={"q":json.dumps(q)},timeout=60)
           r.raise_for_status()
           payload=r.json(); offers=payload.get("offers",[]) if isinstance(payload,dict) else payload
-          cap=float(os.environ["MAX_HOURLY_USD"]); max_bw=float(os.environ["MAX_BANDWIDTH_USD_PER_GB"]); eligible=[]; rejected={"wrong_gpu":0,"not_full_gpu_or_low_vram":0,"over_budget":0,"download_below_1000":0,"unreliable":0,"missing_or_invalid_bandwidth_cost":0,"bandwidth_cost_over_cap":0,"unavailable":0}
+          cap=float(os.environ["MAX_HOURLY_USD"]); max_bw=float(os.environ["MAX_BANDWIDTH_USD_PER_GB"]); eligible=[]; rejected={"blocked_location":0,"wrong_gpu":0,"not_full_gpu_or_low_vram":0,"over_budget":0,"download_below_1000":0,"unreliable":0,"missing_or_invalid_bandwidth_cost":0,"bandwidth_cost_over_cap":0,"unavailable":0}
           for x in offers:
             name=str(x.get("gpu_name") or "").upper()
             if name not in ("RTX 3090","RTX 4090"): rejected["wrong_gpu"]+=1; continue
+            geo=str(x.get("geolocation") or "").strip()
+            country=geo.rsplit(",",1)[-1].strip().upper() if "," in geo else ""
+            if country in {"CN","CHINA"}:
+              rejected["blocked_location"]+=1
+              print("RED-FLAG LOCATION — reject offer",x.get("id"),"| geo:",geo,"| machine_id:",x.get("machine_id"),"| host_id:",x.get("host_id"))
+              continue
             ram=float(x.get("gpu_ram") or 0); frac=float(x.get("gpu_frac") or 0)
             if ram<23000 or frac<0.99: rejected["not_full_gpu_or_low_vram"]+=1; continue
             if x.get("rentable") is False or x.get("rented") is True: rejected["unavailable"]+=1; continue
@@ -88,7 +94,7 @@ jobs:
           print("CANDIDATES — ID | GPU | VRAM MB | TOTAL $/h | DOWN Mbps | UP Mbps | DOWN $/GB | UP $/GB | RELIABILITY | LOCATION")
           print("BANDWIDTH PRICE CAP: $",max_bw,"per GB in EACH direction; lower positive prices rank better.")
           for x in sorted(eligible,key=lambda z:(z["_neo_reliability"],float(z.get("inet_down") or 0),-float(z.get("dph_total") or 999999)),reverse=True):
-            print(x.get("id"),"|",x.get("gpu_name"),"|",x.get("gpu_ram"),"|",x.get("dph_total"),"|",x.get("inet_down"),"|",x.get("inet_up"),"|",x.get("_neo_down_cost_gb"),"|",x.get("_neo_up_cost_gb"),"|",x.get("_neo_reliability"),"|",x.get("geolocation"))
+            print("offer_id",x.get("id"),"| gpu",x.get("gpu_name"),"| VRAM_MB",x.get("gpu_ram"),"| total_per_hour",x.get("dph_total"),"| down_Mbps",x.get("inet_down"),"| up_Mbps",x.get("inet_up"),"| down_USD_GB",x.get("_neo_down_cost_gb"),"| up_USD_GB",x.get("_neo_up_cost_gb"),"| reliability",x.get("_neo_reliability"),"| location",x.get("geolocation"),"| machine_id",x.get("machine_id"),"| host_id",x.get("host_id"))
           if not eligible: raise SystemExit("No RTX 3090/4090 full-GPU offer passed >1000 Mbps download, hourly price, reliability and low-bandwidth-cost limits. No rental made.")
           # Rank lowest verified bandwidth cost first, then reliability and download speed. Low positive rates are preferred, not rejected.
           eligible.sort(key=lambda x:(x["_neo_down_cost_gb"]+x["_neo_up_cost_gb"],-x["_neo_reliability"],-float(x.get("inet_down") or 0),-float(x.get("inet_up") or 0),float(x.get("dph_total") or 999999)))
@@ -96,7 +102,7 @@ jobs:
           # Strip local ranking helper fields before saving the provider offer.
           selected.pop("_neo_down_cost_gb",None); selected.pop("_neo_up_cost_gb",None); selected.pop("_neo_reliability",None)
           open("selected-offer.json","w").write(json.dumps(selected,indent=2))
-          print("SELECTED EXACT OFFER ID:",selected["id"],"|",selected.get("gpu_name"),"| total $/h",selected.get("dph_total"))
+          print("SELECTED OFFER:",json.dumps({k:selected.get(k) for k in ("id","gpu_name","gpu_ram","dph_total","inet_down","inet_up","inet_down_cost","inet_up_cost","reliability2","geolocation","machine_id","host_id")},sort_keys=True))
           with open(os.environ["GITHUB_OUTPUT"],"a") as f: f.write("offer_id="+str(selected["id"])+"\n")
           PY
       - name: Configure Vast CLI
