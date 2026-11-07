@@ -1,0 +1,8 @@
+# Optional Shona speech runtime dependencies.
+# Install in the speech worker/environment, not in the LTX pipeline environment.
+git+https://github.com/SWivid/F5-TTS.git
+huggingface_hub
+hydra-core
+omegaconf
+soundfile
+numpy
