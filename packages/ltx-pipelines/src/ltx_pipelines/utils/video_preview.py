@@ -55,7 +55,7 @@ class VideoPreviewWriter:
         if not safe_stage:
             raise ValueError("stage must contain at least one safe filename character")
 
-        decoded = list(
+        decoded = iter(
             self.video_decoder(
                 video_latent,
                 self.tiling_config,
@@ -63,19 +63,27 @@ class VideoPreviewWriter:
                 dtype=self.dtype,
             )
         )
-        if not decoded:
+        first_batch = next(decoded, None)
+        if first_batch is None:
             raise RuntimeError("Video decoder returned no preview frames")
-        frames = decoded[0] if len(decoded) == 1 else torch.cat(decoded, dim=0)
-        if frames.ndim != 4 or frames.shape[-1] != 3 or frames.shape[0] < 1:
-            raise ValueError(
-                "Video decoder must return (F, H, W, 3) RGB frames; "
-                f"received shape {tuple(frames.shape)}"
-            )
 
-        endpoints = torch.stack(
-            (frames[0], frames[-1]),
-            dim=0,
-        ).detach().to(device="cpu")
+        def validate_batch(batch: torch.Tensor) -> None:
+            if batch.ndim != 4 or batch.shape[-1] != 3 or batch.shape[0] < 1:
+                raise ValueError(
+                    "Video decoder must return non-empty (F, H, W, 3) RGB batches; "
+                    f"received shape {tuple(batch.shape)}"
+                )
+
+        validate_batch(first_batch)
+        # Retain only two CPU frames while the VAE iterator decodes the rest.
+        first_frame = first_batch[0].detach().to(device="cpu")
+        last_frame = first_batch[-1].detach().to(device="cpu")
+        del first_batch
+        for batch in decoded:
+            validate_batch(batch)
+            last_frame = batch[-1].detach().to(device="cpu")
+            del batch
+        endpoints = torch.stack((first_frame, last_frame), dim=0)
         if endpoints.is_floating_point():
             endpoints = endpoints.float()
             minimum = float(endpoints.min())
