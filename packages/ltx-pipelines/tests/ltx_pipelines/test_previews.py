@@ -169,6 +169,7 @@ def test_director_plan_prompt_carries_visual_motion_camera_and_audio() -> None:
             "ambience": "Quiet evening street.",
         },
         "continuity_notes": ["Keep the red car on screen left."],
+        "completion_criteria": ["The driver's door is fully open."],
     })
 
     assert "Visual direction: A woman stands beside a red car." in prompt
@@ -179,6 +180,7 @@ def test_director_plan_prompt_carries_visual_motion_camera_and_audio() -> None:
     assert "Music: Soft cinematic strings." in prompt
     assert "Ambience: Quiet evening street." in prompt
     assert "Keep the red car on screen left." in prompt
+    assert "The driver's door is fully open." in prompt
 
 
 def test_director_plan_prompt_rejects_empty_plan() -> None:
