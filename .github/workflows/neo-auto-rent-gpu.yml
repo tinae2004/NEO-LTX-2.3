@@ -49,10 +49,11 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import os,json,requests
-          q={"limit":1000,"rentable":{"eq":True},"rented":{"eq":False},"verified":{"eq":True}}
+          q={"limit":1000,"rentable":{"eq":True},"rented":{"eq":False},"verified":{"eq":True},"gpu_name":{"in":["RTX 3090","RTX 4090"]},"dph_total":{"lte":float(os.environ["MAX_HOURLY_USD"])}}
           r=requests.get("https://cloud.vast.ai/api/v0/bundles/",headers={"Authorization":"Bearer "+os.environ["VAST_API_KEY"]},params={"q":json.dumps(q)},timeout=60)
           r.raise_for_status()
           payload=r.json(); offers=payload.get("offers",[]) if isinstance(payload,dict) else payload
+          print("Vast server-side filters: verified, rentable, RTX 3090/4090, hourly cap. Returned:",len(offers))
           cap=float(os.environ["MAX_HOURLY_USD"]); max_bw=float(os.environ["MAX_BANDWIDTH_USD_PER_GB"]); eligible=[]; rejected={"deverified_or_unverified":0,"blocked_location":0,"wrong_gpu":0,"not_full_gpu_or_low_vram":0,"over_budget":0,"download_below_1000":0,"unreliable":0,"missing_or_invalid_bandwidth_cost":0,"bandwidth_cost_over_cap":0,"unavailable":0}
           for x in offers:
             # verified=true is applied by the bundles API; its response may omit that boolean.
