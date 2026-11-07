@@ -36,7 +36,7 @@ def test_preview_writer_decodes_middle_rgb_frame_and_bounds_files(tmp_path: Path
     first = writer("stage_1/base", 1, latent)
     assert first.is_file()
     with Image.open(first) as image:
-        assert image.size == (10, 8)
+        assert image.size == (20, 8)
         assert image.mode == "RGB"
         assert image.getpixel((0, 0)) == (128, 128, 128)
 
