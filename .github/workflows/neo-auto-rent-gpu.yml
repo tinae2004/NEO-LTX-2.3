@@ -10,7 +10,7 @@ on:
       max_bandwidth_usd_per_gb:
         description: Maximum upload or download bandwidth price in USD per GB
         required: true
-        default: "0.01"
+        default: "0.03"
         type: string
       keep_gpu:
         description: Keep GPU after boot and model download; billing continues
@@ -94,7 +94,7 @@ jobs:
               continue
             if down_cost>max_bw or up_cost>max_bw:
               rejected["bandwidth_cost_over_cap"]+=1
-              print("REJECT HIGH BANDWIDTH COST | ID",x.get("id"),"down/up $/GB",down_cost,up_cost,"max",max_bw)
+              print("REJECT HIGH BANDWIDTH COST | offer",x.get("id"),"| GPU",x.get("gpu_name"),"| down/up USD/GB",down_cost,up_cost,"| cap",max_bw,"| location",x.get("geolocation"),"| host",x.get("host_id"),"| machine",x.get("machine_id"))
               continue
             x["_neo_down_cost_gb"]=down_cost; x["_neo_up_cost_gb"]=up_cost; x["_neo_reliability"]=rel
             eligible.append(x)
