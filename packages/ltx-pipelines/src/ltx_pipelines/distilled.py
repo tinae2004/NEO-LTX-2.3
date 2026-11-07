@@ -538,6 +538,9 @@ class DistilledPipeline:
         plan does. When supplied, ``preview_callback`` receives a PNG path once per
         selected stage-2 chunk after the transformer has exited. Set
         ``preview_every_n_chunks`` to reduce preview decode and callback overhead.
+        ``apply_director_plans=True`` applies a returned plan to subsequent
+        stage-2 chunks through the existing Gemma prompt encoder; it never
+        edits a chunk that has already entered denoising.
         """
         if preview_every_n_chunks < 1:
             raise ValueError("preview_every_n_chunks must be >= 1")
