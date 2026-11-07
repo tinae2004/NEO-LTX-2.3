@@ -69,15 +69,16 @@ class DeepSeekDirector:
                     f"Unsupported preview image type for DeepSeek vision: {mime_type}"
                 )
             try:
+                image_size = image_path.stat().st_size
+                if image_size > 32 * 1024 * 1024:
+                    raise DeepSeekDirectorError(
+                        "Preview image exceeds DeepSeek's 32 MiB inline image limit."
+                    )
                 image_bytes = image_path.read_bytes()
             except OSError as exc:
                 raise DeepSeekDirectorError(
                     f"Could not read preview image {image_path}: {exc}"
                 ) from exc
-            if len(image_bytes) > 32 * 1024 * 1024:
-                raise DeepSeekDirectorError(
-                    "Preview image exceeds DeepSeek's 32 MiB inline image limit."
-                )
             encoded = base64.b64encode(image_bytes).decode("ascii")
             user_content = [
                 {"type": "text", "text": user_text},
