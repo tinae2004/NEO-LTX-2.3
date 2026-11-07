@@ -198,7 +198,7 @@ def test_context_provider_supplies_new_embeddings_at_each_chunk() -> None:
             state = LatentState(
                 latent=latent,
                 denoise_mask=DenoiseMask(tensor=torch.ones((1, 1, 1, 1, 1))),
-                positions=torch.zeros((1, 3, 1)),
+                positions=torch.zeros_like(latent),
                 clean_latent=latent.clone(),
             )
             return VideoAudio(video=state, audio=None)
@@ -232,4 +232,5 @@ def test_context_provider_supplies_new_embeddings_at_each_chunk() -> None:
     )
 
     assert len(outputs) == 2
-    assert stage.contexts == [first_context, second_context]
+    torch.testing.assert_close(stage.contexts[0], first_context)
+    torch.testing.assert_close(stage.contexts[1], second_context)
