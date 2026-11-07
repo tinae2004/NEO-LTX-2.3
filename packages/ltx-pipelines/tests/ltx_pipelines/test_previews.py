@@ -10,7 +10,12 @@ import pytest
 import torch
 from PIL import Image
 
+from ltx_core.types import DenoiseMask, LatentState
+from ltx_pipelines.chunks.layout import ChunkLayout
+from ltx_pipelines.chunks.operators import denoise_chunks
+from ltx_pipelines.chunks.state import Chunk
 from ltx_pipelines.distilled import _director_plan_prompt
+from ltx_pipelines.utils.types import VideoAudio
 
 from neo.director.client import DeepSeekDirector
 from neo.runtime.observer import ReasoningObserver, ReasoningPreviewAdapter
@@ -179,3 +184,52 @@ def test_director_plan_prompt_carries_visual_motion_camera_and_audio() -> None:
 def test_director_plan_prompt_rejects_empty_plan() -> None:
     with pytest.raises(ValueError, match="no usable"):
         _director_plan_prompt({})
+
+
+
+def test_context_provider_supplies_new_embeddings_at_each_chunk() -> None:
+    class _IdentityStage:
+        def __init__(self):
+            self.contexts = []
+
+        def __call__(self, *, modalities, **_kwargs):
+            self.contexts.append(modalities.video.context)
+            latent = modalities.video.latent
+            state = LatentState(
+                latent=latent,
+                denoise_mask=DenoiseMask(tensor=torch.ones((1, 1, 1, 1, 1))),
+                positions=torch.zeros((1, 3, 1)),
+                clean_latent=latent.clone(),
+            )
+            return VideoAudio(video=state, audio=None)
+
+    layout = ChunkLayout(
+        pixel_frames=1,
+        start_pixel_frame=0,
+        prev_video_carry_frames=0,
+        next_video_carry_frames=0,
+    )
+    chunks = [
+        Chunk(layout=layout, video=torch.zeros((1, 2, 1, 1, 1)), audio=None),
+        Chunk(layout=layout, video=torch.zeros((1, 2, 1, 1, 1)), audio=None),
+    ]
+    first_context = torch.tensor([[1.0]])
+    second_context = torch.tensor([[2.0]])
+    stage = _IdentityStage()
+
+    outputs = list(
+        denoise_chunks(
+            iter(chunks),
+            stage,
+            sigmas=torch.tensor([1.0, 0.0]),
+            noiser=object(),
+            fps=24.0,
+            context_provider=lambda index, _chunk: (
+                first_context if index == 1 else second_context,
+                None,
+            ),
+        )
+    )
+
+    assert len(outputs) == 2
+    assert stage.contexts == [first_context, second_context]
