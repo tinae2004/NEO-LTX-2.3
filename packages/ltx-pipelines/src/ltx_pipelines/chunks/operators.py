@@ -54,6 +54,7 @@ def denoise_chunks(  # noqa: PLR0913
     freeze_video: bool = False,
     freeze_audio: bool = False,
     step_callback: Callable[[int, int, LatentState | None, LatentState | None], None] | None = None,
+    preview_callback: Callable[[int, LatentState | None], None] | None = None,
 ) -> Iterator[Chunk]:
     """Denoise each ``Chunk`` through ``stage``, materializing conditionings and threading carry.
     ``denoiser`` (``SimpleDenoiser`` when omitted) is shared by every chunk; each chunk's positive
@@ -66,6 +67,9 @@ def denoise_chunks(  # noqa: PLR0913
     ancestral Euler loop support this keyword. A custom loop used with a callback
     must accept the same keyword. The callback runs synchronously in the sampling
     thread; it must be lightweight and must not mutate latent states.
+    preview_callback runs once after each completed stage call, after the
+    transformer context has exited and video latents have been unpatchified.
+    This is the safe boundary for optional VAE preview decoding.
     """
     denoiser = SimpleDenoiser() if denoiser is None else denoiser
     if step_callback is not None:
@@ -80,7 +84,7 @@ def denoise_chunks(  # noqa: PLR0913
     carry_audio: torch.Tensor | None = None
     # Each denoise pass owns a separate carry at that stage's spatial resolution.
     stage_carry_keyframes: GeneratedKeyframes | None = None
-    for chunk in chunks:
+    for chunk_index, chunk in enumerate(chunks, start=1):
         incoming_keyframes = stage_carry_keyframes if stage_carry_keyframes is not None else chunk.incoming_keyframes
         video_cond = _append_incoming_keyframes(list(chunk.make_video_conditionings(chunk)), incoming_keyframes)
         audio_cond = list(chunk.make_audio_conditionings(chunk))
@@ -124,6 +128,8 @@ def denoise_chunks(  # noqa: PLR0913
             loop=loop,
             max_batch_size=max_batch_size,
         )
+        if preview_callback is not None:
+            preview_callback(chunk_index, video_state)
         video_latent = video_state.latent if video_state is not None else None
         audio_latent = audio_state.latent if audio_state is not None else None
         # A frozen modality is conditioning, not output: keep the latent that went in rather
