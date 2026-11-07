@@ -143,6 +143,14 @@ def _director_plan_prompt(plan: dict[str, Any]) -> str:
         if clean_notes:
             sections.append("Continuity constraints: " + "; ".join(clean_notes))
 
+    criteria = plan.get("completion_criteria", [])
+    if isinstance(criteria, list):
+        clean_criteria = [
+            item.strip() for item in criteria if isinstance(item, str) and item.strip()
+        ]
+        if clean_criteria:
+            sections.append("Action beat to complete: " + "; ".join(clean_criteria))
+
     if not sections:
         raise ValueError("Director plan contains no usable visual, motion, camera, or audio direction")
     return "\n\n".join(sections)
