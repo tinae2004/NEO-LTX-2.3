@@ -49,17 +49,19 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import os,json,requests
-          q={"limit":1000,"rentable":{"eq":True},"rented":{"eq":False}}
+          q={"limit":1000,"rentable":{"eq":True},"rented":{"eq":False},"verified":{"eq":True}}
           r=requests.get("https://cloud.vast.ai/api/v0/bundles/",headers={"Authorization":"Bearer "+os.environ["VAST_API_KEY"]},params={"q":json.dumps(q)},timeout=60)
           r.raise_for_status()
           payload=r.json(); offers=payload.get("offers",[]) if isinstance(payload,dict) else payload
           cap=float(os.environ["MAX_HOURLY_USD"]); max_bw=float(os.environ["MAX_BANDWIDTH_USD_PER_GB"]); eligible=[]; rejected={"deverified_or_unverified":0,"blocked_location":0,"wrong_gpu":0,"not_full_gpu_or_low_vram":0,"over_budget":0,"download_below_1000":0,"unreliable":0,"missing_or_invalid_bandwidth_cost":0,"bandwidth_cost_over_cap":0,"unavailable":0}
           for x in offers:
-            # Fail closed: only explicitly verified provider machines may be rented.
+            # verified=true is applied by the bundles API; its response may omit that boolean.
+            # If an explicit verification value is returned, reject anything non-verified.
+            verification=x.get("verification")
             verified=x.get("verified")
-            if verified is not True:
+            if verified is False or (verification is not None and str(verification).strip().lower() not in ("verified","true","1")):
               rejected["deverified_or_unverified"]+=1
-              print("REJECT DEVERIFIED/UNVERIFIED OFFER",x.get("id"),"| verified field:",repr(verified),"| host:",x.get("host_id"),"| machine:",x.get("machine_id"))
+              print("REJECT DEVERIFIED/UNVERIFIED OFFER",x.get("id"),"| verified:",repr(verified),"| verification:",repr(verification),"| host:",x.get("host_id"),"| machine:",x.get("machine_id"))
               continue
             name=str(x.get("gpu_name") or "").upper()
             if name not in ("RTX 3090","RTX 4090"): rejected["wrong_gpu"]+=1; continue
@@ -155,60 +157,72 @@ jobs:
         run: |
           set -euo pipefail
           ID="${{ steps.rent.outputs.instance_id }}"
-          echo "Boot deadline: 12 minutes. If SSH and nvidia-smi do not pass, the cleanup step destroys this instance."
+          export INSTANCE_ID="$ID"
+          echo "Waiting for Vast actual_status=running and valid ssh_host/ssh_port; deadline 12 minutes."
           for i in $(seq 1 36); do
             echo "BOOT CHECK $i/36 — instance $ID — elapsed about $((i*20)) seconds"
-            URL=$(vastai ssh-url "$ID" 2>/dev/null || true)
-            if [ -n "$URL" ]; then
-              HOST=$(python -c 'from urllib.parse import urlparse; import sys; print(urlparse(sys.argv[1]).hostname or "")' "$URL")
-              PORT=$(python -c 'from urllib.parse import urlparse; import sys; print(urlparse(sys.argv[1]).port or "")' "$URL")
-              mkdir -p ~/.ssh
-              ssh-keygen -R "[$HOST]:$PORT" >/dev/null 2>&1 || true
+            INSTANCE_JSON=$(python - <<'PY'
+          import os,requests,json
+          r=requests.get(f"https://console.vast.ai/api/v0/instances/{os.environ['INSTANCE_ID']}/",headers={"Authorization":"Bearer "+os.environ["VAST_API_KEY"]},timeout=20)
+          r.raise_for_status()
+          d=r.json()
+          x=d.get("instances",d)
+          if isinstance(x,list): x=next((z for z in x if str(z.get("id"))==os.environ["INSTANCE_ID"]),{})
+          print(json.dumps({k:x.get(k) for k in ("id","actual_status","status_msg","ssh_host","ssh_port","image_runtype")}))
+          PY
+            )
+            echo "VAST INSTANCE: $INSTANCE_JSON"
+            HOST=$(python -c 'import json,sys; print(json.load(sys.stdin).get("ssh_host") or "")' <<<"$INSTANCE_JSON")
+            PORT=$(python -c 'import json,sys; print(json.load(sys.stdin).get("ssh_port") or "")' <<<"$INSTANCE_JSON")
+            STATE=$(python -c 'import json,sys; print(json.load(sys.stdin).get("actual_status") or "")' <<<"$INSTANCE_JSON")
+            if [ "$STATE" = "running" ] && [ -n "$HOST" ] && [[ "$PORT" =~ ^[0-9]+$ ]] && [ "$PORT" -gt 0 ]; then
+              echo "Vast reports running. Testing SSH endpoint $HOST:$PORT with attached Ed25519 key."
               if ssh -i ~/.ssh/neo_vast_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 -p "$PORT" root@"$HOST" 'nvidia-smi'; then
-                echo "GPU BOOTED — NVIDIA DRIVER VERIFIED"
+                echo "GPU BOOTED — SSH AND NVIDIA DRIVER VERIFIED"
+                printf '%s\\n' "$HOST" > ssh_host.txt
+                printf '%s\\n' "$PORT" > ssh_port.txt
                 exit 0
               fi
             fi
             sleep 20
           done
-          echo "BOOT FAILED: SSH and NVIDIA verification did not succeed within 12 minutes. Instance $ID will be destroyed automatically."
+          echo "BOOT FAILED: no verified SSH+nvidia-smi connection within 12 minutes. Instance $ID will be destroyed."
           exit 1
       - name: Install NEO only after terminal is alive
         run: |
           set -euo pipefail
           ID="${{ steps.rent.outputs.instance_id }}"
-          URL=$(vastai ssh-url "$ID")
-          HOST=$(python -c 'from urllib.parse import urlparse; import sys; print(urlparse(sys.argv[1]).hostname or "")' "$URL")
-          PORT=$(python -c 'from urllib.parse import urlparse; import sys; print(urlparse(sys.argv[1]).port or "")' "$URL")
+          HOST=$(cat ssh_host.txt)
+          PORT=$(cat ssh_port.txt)
           echo "GPU passed SSH and nvidia-smi. Now installing OS tools and cloning NEO source."
           ssh -i ~/.ssh/neo_vast_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y git python3 python3-pip python3-venv ffmpeg aria2 build-essential && mkdir -p /workspace && git clone --depth 1 --branch neo-reasoning-dev https://github.com/tinae2004/NEO-LTX-2.3.git /workspace/NEO-LTX-2.3 && python3 -m pip install --upgrade pip uv huggingface_hub pytest'
           echo "NEO source cloned and base dependencies installed after successful GPU boot."
       - name: Download LTX-2.3 checkpoint and spatial upscaler
         run: |
           set -euo pipefail
-          ID="${{ steps.rent.outputs.instance_id }}"; URL=$(vastai ssh-url "$ID"); HOST=$(python -c 'from urllib.parse import urlparse; import sys; print(urlparse(sys.argv[1]).hostname or "")' "$URL"); PORT=$(python -c 'from urllib.parse import urlparse; import sys; print(urlparse(sys.argv[1]).port or "")' "$URL")
+          ID="${{ steps.rent.outputs.instance_id }}"; HOST=$(cat ssh_host.txt); PORT=$(cat ssh_port.txt)
           echo "Downloading official LTX-2.3 distilled checkpoint and spatial upscaler on the GPU worker."
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" "apt-get update && apt-get install -y ffmpeg && python -m pip install --upgrade huggingface_hub && mkdir -p /workspace/models/ltx23 && HF_TOKEN='$HF_TOKEN' python -c \"import os; from huggingface_hub import hf_hub_download; repo='Lightricks/LTX-2.3'; dest='/workspace/models/ltx23'; hf_hub_download(repo_id=repo, filename='ltx-2.3-22b-distilled-1.1.safetensors', local_dir=dest, token=os.environ['HF_TOKEN']); hf_hub_download(repo_id=repo, filename='ltx-2.3-spatial-upscaler-x2-1.1.safetensors', local_dir=dest, token=os.environ['HF_TOKEN'])\" && ls -lh /workspace/models/ltx23/*.safetensors"
+          ssh -i ~/.ssh/neo_vast_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" "apt-get update && apt-get install -y ffmpeg && python -m pip install --upgrade huggingface_hub && mkdir -p /workspace/models/ltx23 && HF_TOKEN='$HF_TOKEN' python -c \"import os; from huggingface_hub import hf_hub_download; repo='Lightricks/LTX-2.3'; dest='/workspace/models/ltx23'; hf_hub_download(repo_id=repo, filename='ltx-2.3-22b-distilled-1.1.safetensors', local_dir=dest, token=os.environ['HF_TOKEN']); hf_hub_download(repo_id=repo, filename='ltx-2.3-spatial-upscaler-x2-1.1.safetensors', local_dir=dest, token=os.environ['HF_TOKEN'])\" && ls -lh /workspace/models/ltx23/*.safetensors"
       - name: Install pinned workspace and run NEO-LTX tests
         run: |
           set -euo pipefail
-          ID="${{ steps.rent.outputs.instance_id }}"; URL=$(vastai ssh-url "$ID"); HOST=$(python -c 'from urllib.parse import urlparse; import sys; print(urlparse(sys.argv[1]).hostname or "")' "$URL"); PORT=$(python -c 'from urllib.parse import urlparse; import sys; print(urlparse(sys.argv[1]).port or "")' "$URL")
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'python -m pip install --upgrade uv pytest huggingface_hub && cd /workspace/NEO-LTX-2.3 && uv sync'
+          ID="${{ steps.rent.outputs.instance_id }}"; HOST=$(cat ssh_host.txt); PORT=$(cat ssh_port.txt)
+          ssh -i ~/.ssh/neo_vast_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'python -m pip install --upgrade uv pytest huggingface_hub && cd /workspace/NEO-LTX-2.3 && uv sync'
           echo "Running Shona, LTX sampler callback, checkpoint, and preview tests."
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'cd /workspace/NEO-LTX-2.3 && uv run --no-sync pytest -q neo/speech/test_dialogue.py packages/ltx-pipelines/tests/ltx_pipelines/test_sampler_callbacks.py packages/ltx-pipelines/tests/ltx_pipelines/test_previews.py'
+          ssh -i ~/.ssh/neo_vast_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'cd /workspace/NEO-LTX-2.3 && uv run --no-sync pytest -q neo/speech/test_dialogue.py packages/ltx-pipelines/tests/ltx_pipelines/test_sampler_callbacks.py packages/ltx-pipelines/tests/ltx_pipelines/test_previews.py'
       - name: Download Gemma 3 text encoder
         run: |
           set -euo pipefail
-          ID="${{ steps.rent.outputs.instance_id }}"; URL=$(vastai ssh-url "$ID"); HOST=$(python -c 'from urllib.parse import urlparse; import sys; print(urlparse(sys.argv[1]).hostname or "")' "$URL"); PORT=$(python -c 'from urllib.parse import urlparse; import sys; print(urlparse(sys.argv[1]).port or "")' "$URL")
+          ID="${{ steps.rent.outputs.instance_id }}"; HOST=$(cat ssh_host.txt); PORT=$(cat ssh_port.txt)
           echo "Downloading gated Gemma 3 encoder. HF_TOKEN is used only on the rented worker and is not written to the repository."
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" "HF_TOKEN='$HF_TOKEN' python -c \"import os; from huggingface_hub import snapshot_download; snapshot_download(repo_id='google/gemma-3-12b-it-qat-q4_0-unquantized', local_dir='/workspace/models/gemma3', token=os.environ['HF_TOKEN'])\""
+          ssh -i ~/.ssh/neo_vast_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" "HF_TOKEN='$HF_TOKEN' python -c \"import os; from huggingface_hub import snapshot_download; snapshot_download(repo_id='google/gemma-3-12b-it-qat-q4_0-unquantized', local_dir='/workspace/models/gemma3', token=os.environ['HF_TOKEN'])\""
       - name: Run actual LTX-2.3 text-to-video inference
         run: |
           set -euo pipefail
-          ID="${{ steps.rent.outputs.instance_id }}"; URL=$(vastai ssh-url "$ID"); HOST=$(python -c 'from urllib.parse import urlparse; import sys; print(urlparse(sys.argv[1]).hostname or "")' "$URL"); PORT=$(python -c 'from urllib.parse import urlparse; import sys; print(urlparse(sys.argv[1]).port or "")' "$URL")
+          ID="${{ steps.rent.outputs.instance_id }}"; HOST=$(cat ssh_host.txt); PORT=$(cat ssh_port.txt)
           echo "Running a real 9-frame 512x512 audio/video generation with FP8 cast and CPU offload."
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'cd /workspace/NEO-LTX-2.3 && mkdir -p /workspace/neo-state/test-output && uv run --no-sync python -m ltx_pipelines.distilled --distilled-checkpoint-path /workspace/models/ltx23/ltx-2.3-22b-distilled-1.1.safetensors --gemma-root /workspace/models/gemma3 --spatial-upsampler-path /workspace/models/ltx23/ltx-2.3-spatial-upscaler-x2-1.1.safetensors --quantization fp8-cast --offload cpu --prompt "A cinematic test shot of a small red car driving slowly along a quiet country road at sunrise, stable camera, realistic lighting." --seed 42 --num-frames 9 --height 512 --width 512 --output-path /workspace/neo-state/test-output/neo-ltx23-smoke.mp4'
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'test -s /workspace/neo-state/test-output/neo-ltx23-smoke.mp4 && ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 /workspace/neo-state/test-output/neo-ltx23-smoke.mp4'
+          ssh -i ~/.ssh/neo_vast_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'cd /workspace/NEO-LTX-2.3 && mkdir -p /workspace/neo-state/test-output && uv run --no-sync python -m ltx_pipelines.distilled --distilled-checkpoint-path /workspace/models/ltx23/ltx-2.3-22b-distilled-1.1.safetensors --gemma-root /workspace/models/gemma3 --spatial-upsampler-path /workspace/models/ltx23/ltx-2.3-spatial-upscaler-x2-1.1.safetensors --quantization fp8-cast --offload cpu --prompt "A cinematic test shot of a small red car driving slowly along a quiet country road at sunrise, stable camera, realistic lighting." --seed 42 --num-frames 9 --height 512 --width 512 --output-path /workspace/neo-state/test-output/neo-ltx23-smoke.mp4'
+          ssh -i ~/.ssh/neo_vast_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'test -s /workspace/neo-state/test-output/neo-ltx23-smoke.mp4 && ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 /workspace/neo-state/test-output/neo-ltx23-smoke.mp4'
           echo "PASS: a real LTX-2.3 MP4 was generated and ffprobe validated it."
           mkdir -p test-artifacts
           scp -i ~/.ssh/neo_vast_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P "$PORT" root@"$HOST":/workspace/neo-state/test-output/neo-ltx23-smoke.mp4 test-artifacts/neo-ltx23-smoke.mp4
