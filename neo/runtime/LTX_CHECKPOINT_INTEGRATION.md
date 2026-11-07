@@ -135,6 +135,7 @@ pipeline.stream_chunks(
     preview_callback=reasoning,
     preview_directory="neo_vault/previews",
     preview_every_n_chunks=2,
+    apply_director_plans=True,
 )
 ```
 
@@ -151,9 +152,12 @@ vision-capable chat-completions request (default model deepseek-flash). It also
 sends the production-state snapshot, current stage/chunk and scene brief. A
 missing preview file is an error rather than silently claiming visual review.
 
-The returned DirectorPlan is persisted as data in ProductionState. It is not
-applied to a running LTX pipeline: changing visual prompts, camera direction,
-references or audio requires a separate adapter that translates approved plan
-fields into supported LTX conditionings at a later chunk boundary. The preview
-callback is also not a live per-denoising-step vision loop.
+The returned DirectorPlan is persisted in ProductionState. With
+`apply_director_plans=True`, its visual, motion, camera, dialogue, sound-effects,
+music and ambience fields are rendered into a new text prompt and passed through
+the existing Gemma `PromptEncoder`. The resulting video/audio embeddings become
+the context for subsequent stage-2 chunks only. The current adapter does not
+apply the plan's image-reference list, change clip length/FPS, or edit an active
+chunk. Leave the option disabled to keep the original prompt for all chunks.
+The preview callback is not a live per-denoising-step vision loop.
 
