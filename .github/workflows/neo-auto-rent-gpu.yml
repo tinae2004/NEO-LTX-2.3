@@ -98,6 +98,8 @@ jobs:
           ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'cd /workspace/NEO-LTX-2.3 && mkdir -p /workspace/neo-state/test-output && uv run --no-sync python -m ltx_pipelines.distilled --distilled-checkpoint-path /workspace/models/ltx23/ltx-2.3-22b-distilled-1.1.safetensors --gemma-root /workspace/models/gemma3 --spatial-upsampler-path /workspace/models/ltx23/ltx-2.3-spatial-upscaler-x2-1.1.safetensors --quantization fp8-cast --offload cpu --prompt "A cinematic test shot of a small red car driving slowly along a quiet country road at sunrise, stable camera, realistic lighting." --seed 42 --num-frames 9 --height 512 --width 512 --output-path /workspace/neo-state/test-output/neo-ltx23-smoke.mp4'
           ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'test -s /workspace/neo-state/test-output/neo-ltx23-smoke.mp4 && ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 /workspace/neo-state/test-output/neo-ltx23-smoke.mp4'
           echo "PASS: a real LTX-2.3 MP4 was generated and ffprobe validated it."
+          mkdir -p test-artifacts
+          scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P "$PORT" root@"$HOST":/workspace/neo-state/test-output/neo-ltx23-smoke.mp4 test-artifacts/neo-ltx23-smoke.mp4
       - name: Upload deployment record
         if: always()
         uses: actions/upload-artifact@v4
@@ -106,6 +108,7 @@ jobs:
           path: |
             selected-offer.json
             instance_id.txt
+            test-artifacts/neo-ltx23-smoke.mp4
           if-no-files-found: ignore
           retention-days: 30
       - name: Destroy if keep is disabled
