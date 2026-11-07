@@ -87,7 +87,7 @@ class ReasoningPreviewAdapter:
         snapshot.update({
             "stage": stage,
             "chunk_index": chunk,
-            "last_frame_path": str(preview),
+            "preview_path": str(preview),
         })
         report = CheckpointReport(
             step=chunk,
