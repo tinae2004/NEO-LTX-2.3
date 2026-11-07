@@ -76,7 +76,7 @@ jobs:
           set -euo pipefail
           ID="${{ steps.rent.outputs.instance_id }}"; URL=$(vastai ssh-url "$ID"); HOST=$(echo "$URL" | sed -E 's#ssh://[^@]+@([^:]+):.*#\\1#'); PORT=$(echo "$URL" | sed -E 's#.*:([0-9]+)$#\\1#')
           echo "Downloading official LTX-2.3 distilled checkpoint and spatial upscaler on the GPU worker."
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'apt-get update && apt-get install -y aria2 && mkdir -p /workspace/models/ltx23 && cd /workspace/models/ltx23 && aria2c -c -x 8 -s 8 --console-log-level=notice -o ltx-2.3-22b-distilled-1.1.safetensors https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-22b-distilled-1.1.safetensors && aria2c -c -x 8 -s 8 --console-log-level=notice -o ltx-2.3-spatial-upscaler-x2-1.1.safetensors https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-spatial-upscaler-x2-1.1.safetensors && ls -lh *.safetensors'
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'apt-get update && apt-get install -y aria2 ffmpeg && mkdir -p /workspace/models/ltx23 && cd /workspace/models/ltx23 && aria2c -c -x 8 -s 8 --console-log-level=notice -o ltx-2.3-22b-distilled-1.1.safetensors https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-22b-distilled-1.1.safetensors && aria2c -c -x 8 -s 8 --console-log-level=notice -o ltx-2.3-spatial-upscaler-x2-1.1.safetensors https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-spatial-upscaler-x2-1.1.safetensors && ls -lh *.safetensors'
       - name: Install pinned workspace and run NEO-LTX tests
         run: |
           set -euo pipefail
