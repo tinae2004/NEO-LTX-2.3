@@ -55,6 +55,9 @@ def denoise_chunks(  # noqa: PLR0913
     freeze_audio: bool = False,
     step_callback: Callable[[int, int, LatentState | None, LatentState | None], None] | None = None,
     preview_callback: Callable[[int, LatentState | None], None] | None = None,
+    context_provider: Callable[
+        [int, Chunk], tuple[torch.Tensor | None, torch.Tensor | None]
+    ] | None = None,
 ) -> Iterator[Chunk]:
     """Denoise each ``Chunk`` through ``stage``, materializing conditionings and threading carry.
     ``denoiser`` (``SimpleDenoiser`` when omitted) is shared by every chunk; each chunk's positive
@@ -70,6 +73,8 @@ def denoise_chunks(  # noqa: PLR0913
     preview_callback runs once after each completed stage call, after the
     transformer context has exited and video latents have been unpatchified.
     This is the safe boundary for optional VAE preview decoding.
+    context_provider can supply updated text-encoder outputs at each chunk
+    boundary, allowing approved director plans to affect only later chunks.
     """
     denoiser = SimpleDenoiser() if denoiser is None else denoiser
     if step_callback is not None:
@@ -85,6 +90,11 @@ def denoise_chunks(  # noqa: PLR0913
     # Each denoise pass owns a separate carry at that stage's spatial resolution.
     stage_carry_keyframes: GeneratedKeyframes | None = None
     for chunk_index, chunk in enumerate(chunks, start=1):
+        video_context, audio_context = (
+            context_provider(chunk_index, chunk)
+            if context_provider is not None
+            else (chunk.video_context, chunk.audio_context)
+        )
         incoming_keyframes = stage_carry_keyframes if stage_carry_keyframes is not None else chunk.incoming_keyframes
         video_cond = _append_incoming_keyframes(list(chunk.make_video_conditionings(chunk)), incoming_keyframes)
         audio_cond = list(chunk.make_audio_conditionings(chunk))
@@ -99,7 +109,7 @@ def denoise_chunks(  # noqa: PLR0913
             ModalitySpec(
                 latent=chunk.video,
                 conditioning_fps=fps,
-                context=chunk.video_context,
+                context=video_context,
                 conditionings=_append_carry(video_cond, carry_video, VideoConditionByLatentIndex),
                 noise_scale=0.0 if freeze_video else scale,
                 frozen=freeze_video,
@@ -111,7 +121,7 @@ def denoise_chunks(  # noqa: PLR0913
             ModalitySpec(
                 latent=chunk.audio,
                 conditioning_fps=fps,
-                context=chunk.audio_context,
+                context=audio_context,
                 conditionings=_append_carry(audio_cond, carry_audio, AudioConditionByLatentIndex),
                 noise_scale=0.0 if freeze_audio else audio_scale,
                 frozen=freeze_audio,
