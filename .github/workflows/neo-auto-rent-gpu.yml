@@ -76,7 +76,7 @@ jobs:
           set -euo pipefail
           ID="${{ steps.rent.outputs.instance_id }}"; URL=$(vastai ssh-url "$ID"); HOST=$(echo "$URL" | sed -E 's#ssh://[^@]+@([^:]+):.*#\\1#'); PORT=$(echo "$URL" | sed -E 's#.*:([0-9]+)$#\\1#')
           echo "Downloading official LTX-2.3 distilled checkpoint and spatial upscaler on the GPU worker."
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'apt-get update && apt-get install -y aria2 ffmpeg && mkdir -p /workspace/models/ltx23 && cd /workspace/models/ltx23 && aria2c -c -x 8 -s 8 --console-log-level=notice -o ltx-2.3-22b-distilled-1.1.safetensors https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-22b-distilled-1.1.safetensors && aria2c -c -x 8 -s 8 --console-log-level=notice -o ltx-2.3-spatial-upscaler-x2-1.1.safetensors https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-spatial-upscaler-x2-1.1.safetensors && ls -lh *.safetensors'
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" "apt-get update && apt-get install -y ffmpeg && python -m pip install --upgrade huggingface_hub && mkdir -p /workspace/models/ltx23 && HF_TOKEN='$HF_TOKEN' python -c \"import os; from huggingface_hub import hf_hub_download; repo='Lightricks/LTX-2.3'; dest='/workspace/models/ltx23'; hf_hub_download(repo_id=repo, filename='ltx-2.3-22b-distilled-1.1.safetensors', local_dir=dest, token=os.environ['HF_TOKEN']); hf_hub_download(repo_id=repo, filename='ltx-2.3-spatial-upscaler-x2-1.1.safetensors', local_dir=dest, token=os.environ['HF_TOKEN'])\" && ls -lh /workspace/models/ltx23/*.safetensors"
       - name: Install pinned workspace and run NEO-LTX tests
         run: |
           set -euo pipefail
