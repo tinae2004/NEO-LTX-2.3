@@ -138,8 +138,8 @@ pipeline.stream_chunks(
 )
 ```
 
-The writer saves the middle RGB frame as a PNG and keeps at most eight preview
-files per writer instance. The pipeline defaults to one preview per stage-2
+The writer saves the first and last decoded RGB frames side by side in one PNG
+contact sheet and keeps at most eight preview files per writer instance. The pipeline defaults to one preview per stage-2
 chunk; raise preview_every_n_chunks to reduce VAE decode and DeepSeek request
 overhead. The DeepSeek adapter can be configured with the same every_n_chunks
 interval. Preview generation and DeepSeek calls are synchronous between chunks,
