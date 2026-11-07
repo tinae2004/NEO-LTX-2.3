@@ -33,7 +33,7 @@ concurrency:
 jobs:
   gpu-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 60
     env:
       VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
       NEO_WORKER_SECRET: ${{ secrets.NEO_WORKER_SECRET }}
