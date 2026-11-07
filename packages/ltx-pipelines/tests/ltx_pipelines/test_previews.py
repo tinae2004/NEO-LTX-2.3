@@ -10,11 +10,12 @@ import pytest
 import torch
 from PIL import Image
 
+from ltx_pipelines.distilled import _director_plan_prompt
+
 from neo.director.client import DeepSeekDirector
 from neo.runtime.observer import ReasoningObserver, ReasoningPreviewAdapter
 from neo.runtime.previews import VideoPreviewWriter
 from neo.runtime.state import ProductionState
-from ltx_pipelines.distilled import _director_plan_prompt
 
 
 class _FakeVideoDecoder:
@@ -25,8 +26,12 @@ class _FakeVideoDecoder:
         del tiling_config, generator, dtype
         self.calls += 1
         assert latent.ndim == 5
-        # LTX playback tensors are frame-first, RGB-last.
-        return iter([torch.full((3, 8, 10, 3), 0.5, dtype=torch.float32)])
+        # LTX playback tensors are frame-first, RGB-last; endpoints differ.
+        frames = torch.empty((3, 8, 10, 3), dtype=torch.float32)
+        frames[0].fill_(0.25)
+        frames[1].fill_(0.5)
+        frames[2].fill_(0.75)
+        return iter([frames])
 
 
 def test_preview_writer_decodes_start_end_contact_sheet_and_bounds_files(tmp_path: Path) -> None:
@@ -39,7 +44,8 @@ def test_preview_writer_decodes_start_end_contact_sheet_and_bounds_files(tmp_pat
     with Image.open(first) as image:
         assert image.size == (20, 8)
         assert image.mode == "RGB"
-        assert image.getpixel((0, 0)) == (128, 128, 128)
+        assert image.getpixel((0, 0)) == (64, 64, 64)
+        assert image.getpixel((10, 0)) == (191, 191, 191)
 
     second = writer("stage_2_refine", 1, latent)
     assert second.is_file()
