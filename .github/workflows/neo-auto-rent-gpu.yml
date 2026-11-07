@@ -1,0 +1,90 @@
+name: NEO Auto Rent and Boot GPU
+on:
+  workflow_dispatch:
+    inputs:
+      max_hourly_usd:
+        description: Maximum total hourly price in USD
+        required: true
+        default: "0.40"
+        type: string
+      keep_gpu:
+        description: Keep GPU after boot and model download; billing continues
+        required: true
+        default: true
+        type: boolean
+permissions:
+  contents: read
+concurrency:
+  group: neo-auto-gpu-deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      NEO_WORKER_SECRET: ${{ secrets.NEO_WORKER_SECRET }}
+      MAX_HOURLY_USD: ${{ inputs.max_hourly_usd }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: neo-reasoning-dev
+      - name: Validate budget and secrets
+        run: |
+          set -euo pipefail
+          python -c 'import os; c=float(os.environ["MAX_HOURLY_USD"]); assert 0<c<=0.40, "Budget must not exceed $0.40/h"; assert os.environ.get("VAST_API_KEY"); assert len(os.environ.get("NEO_WORKER_SECRET",""))>=32'
+      - name: Install tools
+        run: |
+          python -m pip install --upgrade requests vastai
+          sudo apt-get update && sudo apt-get install -y openssh-client aria2
+      - name: Pull all current offers and select a 48GB+ GPU
+        id: select
+        run: |
+          python - <<'PY'
+          import os,json,requests
+          q={"limit":1000,"rentable":{"eq":True},"rented":{"eq":False}}
+          r=requests.get("https://cloud.vast.ai/api/v0/bundles/",headers={"Authorization":"Bearer "+os.environ["VAST_API_KEY"]},params={"q":json.dumps(q)},timeout=60); r.raise_for_status()
+          p=r.json(); offers=p.get("offers",[]) if isinstance(p,dict) else p
+          cap=float(os.environ["MAX_HOURLY_USD"]); good=[]
+          for x in offers:
+            n=str(x.get("gpu_name") or "").upper(); ram=float(x.get("gpu_ram") or 0); price=float(x.get("dph_total") or 999); frac=float(x.get("gpu_frac") or 0); rel=float(x.get("reliability2") or x.get("reliability") or 0); down=float(x.get("inet_down") or 0); up=float(x.get("inet_up") or 0)
+            if ram>=46000 and frac>=.99 and price<=cap and rel>=.95 and down>=100 and up>=50 and not any(t in n for t in ("TESLA","V100","P100")): good.append(x)
+          if not good: raise SystemExit("No rentable full 48GB+ non-Tesla GPU meets price/reliability/network limits. No rental made.")
+          good.sort(key=lambda x:(float(x.get("reliability2") or x.get("reliability") or 0),min(float(x.get("inet_down") or 0),float(x.get("inet_up") or 0)),-float(x.get("dph_total") or 999)),reverse=True)
+          x=good[0]; open("selected-offer.json","w").write(json.dumps(x,indent=2))
+          print("Marketplace offers:",len(offers),"Eligible:",len(good)); print("SELECTED OFFER ID:",x["id"],"GPU:",x.get("gpu_name"),"VRAM MB:",x.get("gpu_ram"),"TOTAL $/h:",x.get("dph_total"),"reliability:",x.get("reliability2") or x.get("reliability"),"network:",x.get("inet_down"),"/",x.get("inet_up"))
+          open(os.environ["GITHUB_OUTPUT"],"a").write("offer_id="+str(x["id"])+"\n")
+          PY
+      - name: Configure Vast CLI
+        run: vastai set api-key "$VAST_API_KEY"
+      - name: Rent exact selected offer
+        id: rent
+        run: |
+          set -euo pipefail
+          vastai create instance "${{ steps.select.outputs.offer_id }}" --image "pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime" --disk 200 --ssh --direct --cancel-unavail --env "-e NEO_WORKER_SECRET=$NEO_WORKER_SECRET -e NEO_WORKER_ROOT=/workspace/NEO-LTX-2.3 -e NEO_WORKER_STATE=/workspace/neo-state -e NEO_REPO_BRANCH=neo-reasoning-dev -p 8765:8765" --onstart ./neo/worker/onstart.sh --label "NEO-AUTO-${GITHUB_RUN_ID}"
+          for i in $(seq 1 24); do ID=$(vastai show instances --raw | python -c 'import json,sys; a=json.load(sys.stdin); a=a if isinstance(a,list) else a.get("instances",[]); z=[x for x in a if str(x.get("label"," ")).endswith("'"$GITHUB_RUN_ID"'")]; print(z[-1]["id"] if z else "")'); [ -n "$ID" ] && break; sleep 5; done
+          test -n "${ID:-}" || { echo "Instance ID unresolved; check Vast inventory for NEO-AUTO-${GITHUB_RUN_ID}"; exit 1; }
+          echo "$ID" > instance_id.txt; echo "instance_id=$ID" >> "$GITHUB_OUTPUT"; echo "RENTED INSTANCE ID: $ID"
+      - name: Monitor boot and CUDA
+        run: |
+          set -euo pipefail; ID="${{ steps.rent.outputs.instance_id }}"
+          for i in $(seq 1 60); do echo "BOOT CHECK $i/60 — instance $ID"; URL=$(vastai ssh-url "$ID" 2>/dev/null || true); if [ -n "$URL" ]; then HOST=$(echo "$URL" | sed -E 's#ssh://[^@]+@([^:]+):.*#\1#'); PORT=$(echo "$URL" | sed -E 's#.*:([0-9]+)$#\1#'); mkdir -p ~/.ssh; ssh-keygen -R "[$HOST]:$PORT" >/dev/null 2>&1 || true; if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 -p "$PORT" root@"$HOST" 'nvidia-smi'; then echo "GPU BOOTED — NVIDIA DRIVER VERIFIED"; exit 0; fi; fi; sleep 20; done
+          echo "GPU boot timeout. Instance ID $ID retained for inspection."; exit 1
+      - name: Transfer LTX-2.3 checkpoint with progress
+        run: |
+          set -euo pipefail; ID="${{ steps.rent.outputs.instance_id }}"; URL=$(vastai ssh-url "$ID"); HOST=$(echo "$URL" | sed -E 's#ssh://[^@]+@([^:]+):.*#\1#'); PORT=$(echo "$URL" | sed -E 's#.*:([0-9]+)$#\1#')
+          echo "Starting checkpoint transfer on rented GPU. Model weights are downloaded from the official Lightricks model repository; GitHub remains the code/control plane."
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'mkdir -p /workspace/models/ltx23 && cd /workspace/models/ltx23 && if [ ! -s ltx-2.3-22b-distilled-1.1.safetensors ]; then aria2c -c -x 8 -s 8 --console-log-level=notice -o ltx-2.3-22b-distilled-1.1.safetensors https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-22b-distilled-1.1.safetensors; else echo "Checkpoint already present; skipping transfer."; fi && ls -lh ltx-2.3-22b-distilled-1.1.safetensors'
+      - name: Upload deployment record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: neo-gpu-deployment
+          path: |
+            selected-offer.json
+            instance_id.txt
+          if-no-files-found: ignore
+          retention-days: 30
+      - name: Destroy if keep is disabled
+        if: always() && inputs.keep_gpu != true && steps.rent.outputs.instance_id != ''
+        run: vastai destroy instance "${{ steps.rent.outputs.instance_id }}"
