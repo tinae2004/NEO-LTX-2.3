@@ -84,7 +84,19 @@ class JobRequest(BaseModel):
 
 @app.on_event("startup")
 async def startup() -> None:
-    db().close()
+    # Recover queued/running work after an API process restart. Job IDs remain stable.
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT id, task FROM jobs WHERE status IN ('queued', 'running')"
+        ).fetchall()
+        conn.execute(
+            "UPDATE jobs SET status='queued', updated=? WHERE status='running'",
+            (time.time(),),
+        )
+    for row in rows:
+        job_id = row["id"]
+        if job_id not in _tasks or _tasks[job_id].done():
+            _tasks[job_id] = asyncio.create_task(execute(job_id, row["task"]))
 
 
 @app.get("/health")
