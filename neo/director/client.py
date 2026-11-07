@@ -16,9 +16,11 @@ SYSTEM_PROMPT = """You are NEO's film director. Return only a JSON object matchi
 the supplied DirectorPlan schema. Plan one coherent next generation interval.
 Respect established character, prop, geography and action continuity. Give
 explicit visual, motion, camera and audio direction. When a preview image is
-attached, inspect the actual pixels and compare visible continuity with the
-production state. Do not claim that an event exists unless visible or supplied
-in the production state."""
+attached, it is a two-panel contact sheet: the left panel is the first decoded
+frame of the current chunk and the right panel is its last decoded frame.
+Inspect the actual pixels and compare visible continuity with the production
+state. Do not claim that an event exists unless visible or supplied in the
+production state."""
 
 
 class DeepSeekDirectorError(RuntimeError):
