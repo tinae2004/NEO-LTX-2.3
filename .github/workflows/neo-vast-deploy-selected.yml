@@ -1,0 +1,111 @@
+name: NEO Deploy Selected Vast GPU
+on:
+  workflow_dispatch:
+    inputs:
+      offer_id:
+        description: "Exact offer ID from the latest Vast inventory"
+        required: true
+        default: "51118208"
+        type: string
+      max_hourly_usd:
+        description: "Maximum total hourly price"
+        required: true
+        default: "0.40"
+        type: string
+      keep_gpu:
+        description: "Keep instance after deployment (billing continues)"
+        required: true
+        default: true
+        type: boolean
+permissions:
+  contents: read
+concurrency:
+  group: neo-selected-vast-deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+      NEO_WORKER_SECRET: ${{ secrets.NEO_WORKER_SECRET }}
+      OFFER_ID: ${{ inputs.offer_id }}
+      MAX_HOURLY_USD: ${{ inputs.max_hourly_usd }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate and recheck exact offer ID live
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install requests
+          python - <<'PY'
+          import os,re,json,requests
+          oid=os.environ["OFFER_ID"]
+          if not re.fullmatch(r"[0-9]{4,12}",oid): raise SystemExit("Invalid offer ID")
+          cap=float(os.environ["MAX_HOURLY_USD"])
+          if not 0 < cap <= .40: raise SystemExit("Hourly cap must be <= $0.40")
+          if not os.environ.get("VAST_API_KEY") or len(os.environ.get("NEO_WORKER_SECRET",""))<32: raise SystemExit("Missing required Actions secret")
+          q={"limit":1000,"rentable":{"eq":True},"rented":{"eq":False}}
+          r=requests.get("https://cloud.vast.ai/api/v0/bundles/",headers={"Authorization":"Bearer "+os.environ["VAST_API_KEY"]},params={"q":json.dumps(q)},timeout=60)
+          r.raise_for_status()
+          p=r.json(); offers=p.get("offers",[]) if isinstance(p,dict) else p
+          matches=[x for x in offers if str(x.get("id"))==oid]
+          if not matches: raise SystemExit("Offer ID no longer rentable/listed. No instance created.")
+          x=matches[0]; price=float(x.get("dph_total") or 9999); ram=float(x.get("gpu_ram") or 0); frac=float(x.get("gpu_frac") or 0)
+          if price>cap: raise SystemExit(f"Live total price ${price:.4f}/h exceeds cap ${cap:.2f}/h.")
+          if ram<24000 or frac<.99: raise SystemExit("Offer is not a full 24GB+ GPU.")
+          open("selected-offer.json","w").write(json.dumps(x,indent=2))
+          print(f"REVALIDATED offer {oid}: {x.get('gpu_name')} {ram}MB, total ${price:.4f}/h, reliability {x.get('reliability2') or x.get('reliability')}, network {x.get('inet_down')}/{x.get('inet_up')} Mbps")
+          PY
+      - name: Install Vast CLI and SSH
+        run: |
+          python -m pip install vastai
+          sudo apt-get update
+          sudo apt-get install -y openssh-client
+      - name: Rent the exact offer ID
+        id: rent
+        shell: bash
+        run: |
+          set -euo pipefail
+          vastai set api-key "$VAST_API_KEY"
+          vastai create instance "$OFFER_ID" --image "pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime" --disk 100 --ssh --direct --cancel-unavail --env "-e NEO_WORKER_SECRET=$NEO_WORKER_SECRET -e NEO_WORKER_ROOT=/workspace/NEO-LTX-2.3 -e NEO_WORKER_STATE=/workspace/neo-state -e NEO_REPO_BRANCH=neo-reasoning-dev -p 8765:8765" --onstart ./neo/worker/onstart.sh --label "NEO-SELECTED-${GITHUB_RUN_ID}"
+          for i in $(seq 1 12); do
+            INSTANCE_ID="$(vastai show instances --raw | python -c 'import json,sys; a=json.load(sys.stdin); a=a if isinstance(a,list) else a.get("instances",[]); xs=[x for x in a if str(x.get("label","")).endswith("'"$GITHUB_RUN_ID"'")]; print(xs[-1]["id"] if xs else "")')"
+            if [ -n "$INSTANCE_ID" ]; then break; fi
+            sleep 5
+          done
+          if [ -z "${INSTANCE_ID:-}" ]; then echo "Instance ID not resolved; inspect Vast account inventory for NEO-SELECTED-${GITHUB_RUN_ID}"; exit 1; fi
+          echo "$INSTANCE_ID" > instance_id.txt
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+      - name: Verify GPU and worker API
+        shell: bash
+        run: |
+          set -euo pipefail
+          ID="$(cat instance_id.txt)"
+          for i in $(seq 1 60); do
+            SSH_URL="$(vastai ssh-url "$ID" 2>/dev/null || true)"
+            if [ -n "$SSH_URL" ]; then break; fi
+            sleep 10
+          done
+          if [ -z "${SSH_URL:-}" ]; then echo "GPU rented but SSH not ready; instance retained."; exit 1; fi
+          HOST="$(echo "$SSH_URL" | sed -E 's#ssh://[^@]+@([^:]+):.*#\1#')"
+          PORT="$(echo "$SSH_URL" | sed -E 's#.*:([0-9]+)$#\1#')"
+          mkdir -p ~/.ssh
+          ssh-keygen -R "[$HOST]:$PORT" >/dev/null 2>&1 || true
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -p "$PORT" root@"$HOST" 'nvidia-smi'
+          echo "GPU verified over SSH."
+      - name: Upload selected offer and instance ID
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: neo-selected-gpu-deployment
+          path: |
+            selected-offer.json
+            instance_id.txt
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Destroy only if keep_gpu is false
+        if: always() && inputs.keep_gpu != true && steps.rent.outputs.instance_id != ''
+        run: |
+          vastai set api-key "$VAST_API_KEY"
+          vastai destroy instance "${{ steps.rent.outputs.instance_id }}" || true
