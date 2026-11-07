@@ -38,23 +38,53 @@ jobs:
         run: |
           python -m pip install --upgrade requests vastai huggingface_hub
           sudo apt-get update && sudo apt-get install -y openssh-client aria2
-      - name: Pull all current offers and select a 48GB+ GPU
+      - name: Pull live offers and select RTX 3090 or RTX 4090
         id: select
         run: |
+          set -euo pipefail
           python - <<'PY'
           import os,json,requests
           q={"limit":1000,"rentable":{"eq":True},"rented":{"eq":False}}
-          r=requests.get("https://cloud.vast.ai/api/v0/bundles/",headers={"Authorization":"Bearer "+os.environ["VAST_API_KEY"]},params={"q":json.dumps(q)},timeout=60); r.raise_for_status()
-          p=r.json(); offers=p.get("offers",[]) if isinstance(p,dict) else p
-          cap=float(os.environ["MAX_HOURLY_USD"]); good=[]
+          r=requests.get("https://cloud.vast.ai/api/v0/bundles/",headers={"Authorization":"Bearer "+os.environ["VAST_API_KEY"]},params={"q":json.dumps(q)},timeout=60)
+          r.raise_for_status()
+          payload=r.json(); offers=payload.get("offers",[]) if isinstance(payload,dict) else payload
+          cap=float(os.environ["MAX_HOURLY_USD"]); eligible=[]; rejected={"wrong_gpu":0,"not_full_gpu_or_low_vram":0,"over_budget":0,"download_below_1000":0,"unreliable":0,"missing_or_suspicious_bandwidth_cost":0,"unavailable":0}
           for x in offers:
-            n=str(x.get("gpu_name") or "").upper(); ram=float(x.get("gpu_ram") or 0); price=float(x.get("dph_total") or 999); frac=float(x.get("gpu_frac") or 0); rel=float(x.get("reliability2") or x.get("reliability") or 0); down=float(x.get("inet_down") or 0); up=float(x.get("inet_up") or 0)
-            if ram>=46000 and frac>=.99 and price<=cap and rel>=.95 and down>=100 and up>=50 and not any(t in n for t in ("TESLA","V100","P100")): good.append(x)
-          if not good: raise SystemExit("No rentable full 48GB+ non-Tesla GPU meets price/reliability/network limits. No rental made.")
-          good.sort(key=lambda x:(float(x.get("reliability2") or x.get("reliability") or 0),min(float(x.get("inet_down") or 0),float(x.get("inet_up") or 0)),-float(x.get("dph_total") or 999)),reverse=True)
-          x=good[0]; open("selected-offer.json","w").write(json.dumps(x,indent=2))
-          print("Marketplace offers:",len(offers),"Eligible:",len(good)); print("SELECTED OFFER ID:",x["id"],"GPU:",x.get("gpu_name"),"VRAM MB:",x.get("gpu_ram"),"TOTAL $/h:",x.get("dph_total"),"reliability:",x.get("reliability2") or x.get("reliability"),"network:",x.get("inet_down"),"/",x.get("inet_up"))
-          open(os.environ["GITHUB_OUTPUT"],"a").write("offer_id="+str(x["id"])+"\n")
+            name=str(x.get("gpu_name") or "").upper()
+            if name not in ("RTX 3090","RTX 4090"): rejected["wrong_gpu"]+=1; continue
+            ram=float(x.get("gpu_ram") or 0); frac=float(x.get("gpu_frac") or 0)
+            if ram<23000 or frac<0.99: rejected["not_full_gpu_or_low_vram"]+=1; continue
+            if x.get("rentable") is False or x.get("rented") is True: rejected["unavailable"]+=1; continue
+            price=float(x.get("dph_total") or 999999)
+            if price>cap: rejected["over_budget"]+=1; continue
+            down=float(x.get("inet_down") or 0)
+            if down<=1000: rejected["download_below_1000"]+=1; continue
+            rel=float(x.get("reliability2") or x.get("reliability") or 0)
+            if rel<0.95: rejected["unreliable"]+=1; continue
+            # Vast lists per-GB transfer rates separately. Zero/missing or implausibly tiny rates are treated as suspicious, not as a bargain.
+            down_cost=x.get("inet_down_cost"); up_cost=x.get("inet_up_cost")
+            try: down_cost=float(down_cost); up_cost=float(up_cost)
+            except (TypeError,ValueError): down_cost=up_cost=0
+            if down_cost<=0.001 or up_cost<=0.001:
+              rejected["missing_or_suspicious_bandwidth_cost"]+=1
+              print("REJECT SUSPICIOUS BANDWIDTH COST | ID",x.get("id"),"down/up $/GB",down_cost,up_cost)
+              continue
+            x["_neo_down_cost_gb"]=down_cost; x["_neo_up_cost_gb"]=up_cost; x["_neo_reliability"]=rel
+            eligible.append(x)
+          print("LIVE OFFERS RETURNED:",len(offers),"ELIGIBLE:",len(eligible))
+          print("REJECTION COUNTS:",json.dumps(rejected,sort_keys=True))
+          print("CANDIDATES — ID | GPU | VRAM MB | TOTAL $/h | DOWN Mbps | UP Mbps | DOWN $/GB | UP $/GB | RELIABILITY | LOCATION")
+          for x in sorted(eligible,key=lambda z:(z["_neo_reliability"],float(z.get("inet_down") or 0),-float(z.get("dph_total") or 999999)),reverse=True):
+            print(x.get("id"),"|",x.get("gpu_name"),"|",x.get("gpu_ram"),"|",x.get("dph_total"),"|",x.get("inet_down"),"|",x.get("inet_up"),"|",x.get("_neo_down_cost_gb"),"|",x.get("_neo_up_cost_gb"),"|",x.get("_neo_reliability"),"|",x.get("geolocation"))
+          if not eligible: raise SystemExit("No RTX 3090/4090 full-GPU offer passed >1000 Mbps download, price, reliability and bandwidth-cost sanity checks. No rental made.")
+          # Rank reliability first, then download speed; do not reward suspiciously cheap bandwidth.
+          eligible.sort(key=lambda x:(x["_neo_reliability"],float(x.get("inet_down") or 0),float(x.get("inet_up") or 0),-float(x.get("dph_total") or 999999)),reverse=True)
+          selected=eligible[0]
+          # Strip local ranking helper fields before saving the provider offer.
+          selected.pop("_neo_down_cost_gb",None); selected.pop("_neo_up_cost_gb",None); selected.pop("_neo_reliability",None)
+          open("selected-offer.json","w").write(json.dumps(selected,indent=2))
+          print("SELECTED EXACT OFFER ID:",selected["id"],"|",selected.get("gpu_name"),"| total $/h",selected.get("dph_total"))
+          with open(os.environ["GITHUB_OUTPUT"],"a") as f: f.write("offer_id="+str(selected["id"])+"\n")
           PY
       - name: Configure Vast CLI
         run: vastai set api-key "$VAST_API_KEY"
