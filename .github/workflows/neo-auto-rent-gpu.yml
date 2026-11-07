@@ -179,8 +179,8 @@ jobs:
               echo "Vast reports running. Testing SSH endpoint $HOST:$PORT with attached Ed25519 key."
               if ssh -i ~/.ssh/neo_vast_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 -p "$PORT" root@"$HOST" 'nvidia-smi'; then
                 echo "GPU BOOTED — SSH AND NVIDIA DRIVER VERIFIED"
-                printf '%s\\n' "$HOST" > ssh_host.txt
-                printf '%s\\n' "$PORT" > ssh_port.txt
+                printf '%s\n' "$HOST" > ssh_host.txt
+                printf '%s\n' "$PORT" > ssh_port.txt
                 exit 0
               fi
             fi
