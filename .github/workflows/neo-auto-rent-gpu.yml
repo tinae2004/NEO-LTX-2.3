@@ -106,7 +106,7 @@ jobs:
         id: rent
         run: |
           set -euo pipefail
-          vastai create instance "${{ steps.select.outputs.offer_id }}" --image "pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime" --disk 200 --ssh --direct --cancel-unavail --env "-e NEO_WORKER_SECRET=$NEO_WORKER_SECRET -e NEO_WORKER_ROOT=/workspace/NEO-LTX-2.3 -e NEO_WORKER_STATE=/workspace/neo-state -e NEO_REPO_BRANCH=neo-reasoning-dev -p 8765:8765" --onstart ./neo/worker/onstart.sh --label "NEO-AUTO-${GITHUB_RUN_ID}"
+          vastai create instance "${{ steps.select.outputs.offer_id }}" --image "pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime" --disk 200 --ssh --direct --cancel-unavail --env "-e NEO_WORKER_SECRET=$NEO_WORKER_SECRET -e NEO_WORKER_ROOT=/workspace/NEO-LTX-2.3 -e NEO_WORKER_STATE=/workspace/neo-state -e NEO_REPO_BRANCH=neo-reasoning-dev -p 8765:8765" --onstart ./neo/worker/onstart.sh --label "NEO-AUTO-${GITHUB_RUN_ID}" > /tmp/neo-vast-create.log 2>&1 || { echo "Vast create failed; inspect account inventory."; exit 1; }
           for i in $(seq 1 24); do ID=$(vastai show instances --raw | python -c 'import json,sys; a=json.load(sys.stdin); a=a if isinstance(a,list) else a.get("instances",[]); z=[x for x in a if str(x.get("label"," ")).endswith("'"$GITHUB_RUN_ID"'")]; print(z[-1]["id"] if z else "")'); [ -n "$ID" ] && break; sleep 5; done
           test -n "${ID:-}" || { echo "Instance ID unresolved; check Vast inventory for NEO-AUTO-${GITHUB_RUN_ID}"; exit 1; }
           echo "$ID" > instance_id.txt; echo "instance_id=$ID" >> "$GITHUB_OUTPUT"; echo "RENTED INSTANCE ID: $ID"
@@ -157,4 +157,4 @@ jobs:
           retention-days: 30
       - name: Destroy if keep is disabled
         if: always() && steps.rent.outputs.instance_id != '' && (inputs.keep_gpu != true || job.status != 'success')
-        run: vastai destroy instance "${{ steps.rent.outputs.instance_id }}"
+        run: vastai destroy instance "${{ steps.rent.outputs.instance_id }}" -y --raw
