@@ -28,7 +28,7 @@ class _FakeVideoDecoder:
         return iter([torch.full((3, 8, 10, 3), 0.5, dtype=torch.float32)])
 
 
-def test_preview_writer_decodes_middle_rgb_frame_and_bounds_files(tmp_path: Path) -> None:
+def test_preview_writer_decodes_start_end_contact_sheet_and_bounds_files(tmp_path: Path) -> None:
     decoder = _FakeVideoDecoder()
     writer = VideoPreviewWriter(decoder, tmp_path, max_previews=1)
     latent = torch.zeros((1, 128, 3, 4, 4), dtype=torch.float32)
