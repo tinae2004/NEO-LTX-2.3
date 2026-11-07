@@ -473,7 +473,9 @@ class DistilledPipeline:
         ``preview_callback``, when supplied, receives the stage name, 1-based chunk
         index and PNG path for selected stage-2 chunk previews. Preview generation
         happens after the denoiser stage has exited. ``preview_every_n_chunks``
-        controls how often VAE previews are decoded.
+        controls how often VAE previews are decoded. Set
+        ``apply_director_plans=True`` to re-encode returned plan directions
+        through Gemma and use them as context for following stage-2 chunks.
         """
         chunks, num_frames, tiling_config = self.stream_chunks(
             prompt=prompt,
