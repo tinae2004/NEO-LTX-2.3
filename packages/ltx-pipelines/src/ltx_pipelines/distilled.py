@@ -6,8 +6,6 @@ from typing import Any
 
 import torch
 
-from neo.runtime.previews import VideoPreviewWriter
-
 from ltx_core.allocator_trim_strategy import AllocatorTrimStrategy
 from ltx_core.components.noisers import GaussianNoiser
 from ltx_core.conditioning import ConditioningItem
@@ -71,6 +69,7 @@ from ltx_pipelines.utils.media_io import (
 )
 from ltx_pipelines.utils.model_paths import ModelPaths
 from ltx_pipelines.utils.samplers import euler_ancestral_denoising_loop
+from ltx_pipelines.utils.video_preview import VideoPreviewWriter
 from ltx_pipelines.utils.types import (
     DEFAULT_AUTO_DURATION,
     AutoDuration,
