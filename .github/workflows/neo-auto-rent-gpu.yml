@@ -53,8 +53,14 @@ jobs:
           r=requests.get("https://cloud.vast.ai/api/v0/bundles/",headers={"Authorization":"Bearer "+os.environ["VAST_API_KEY"]},params={"q":json.dumps(q)},timeout=60)
           r.raise_for_status()
           payload=r.json(); offers=payload.get("offers",[]) if isinstance(payload,dict) else payload
-          cap=float(os.environ["MAX_HOURLY_USD"]); max_bw=float(os.environ["MAX_BANDWIDTH_USD_PER_GB"]); eligible=[]; rejected={"blocked_location":0,"wrong_gpu":0,"not_full_gpu_or_low_vram":0,"over_budget":0,"download_below_1000":0,"unreliable":0,"missing_or_invalid_bandwidth_cost":0,"bandwidth_cost_over_cap":0,"unavailable":0}
+          cap=float(os.environ["MAX_HOURLY_USD"]); max_bw=float(os.environ["MAX_BANDWIDTH_USD_PER_GB"]); eligible=[]; rejected={"deverified_or_unverified":0,"blocked_location":0,"wrong_gpu":0,"not_full_gpu_or_low_vram":0,"over_budget":0,"download_below_1000":0,"unreliable":0,"missing_or_invalid_bandwidth_cost":0,"bandwidth_cost_over_cap":0,"unavailable":0}
           for x in offers:
+            # Fail closed: only explicitly verified provider machines may be rented.
+            verified=x.get("verified")
+            if verified is not True:
+              rejected["deverified_or_unverified"]+=1
+              print("REJECT DEVERIFIED/UNVERIFIED OFFER",x.get("id"),"| verified field:",repr(verified),"| host:",x.get("host_id"),"| machine:",x.get("machine_id"))
+              continue
             name=str(x.get("gpu_name") or "").upper()
             if name not in ("RTX 3090","RTX 4090"): rejected["wrong_gpu"]+=1; continue
             # Permanently reject provider hardware previously observed stuck in boot/SSL failure.
