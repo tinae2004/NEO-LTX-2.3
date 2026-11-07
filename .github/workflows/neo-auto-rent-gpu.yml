@@ -119,8 +119,8 @@ jobs:
             echo "BOOT CHECK $i/36 — instance $ID — elapsed about $((i*20)) seconds"
             URL=$(vastai ssh-url "$ID" 2>/dev/null || true)
             if [ -n "$URL" ]; then
-              HOST=$(echo "$URL" | sed -E 's#ssh://[^@]+@([^:]+):.*#\\1#')
-              PORT=$(echo "$URL" | sed -E 's#.*:([0-9]+)$#\\1#')
+              HOST=$(python -c 'from urllib.parse import urlparse; import sys; print(urlparse(sys.argv[1]).hostname or "")' "$URL")
+              PORT=$(python -c 'from urllib.parse import urlparse; import sys; print(urlparse(sys.argv[1]).port or "")' "$URL")
               mkdir -p ~/.ssh
               ssh-keygen -R "[$HOST]:$PORT" >/dev/null 2>&1 || true
               if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 -p "$PORT" root@"$HOST" 'nvidia-smi'; then
@@ -135,26 +135,26 @@ jobs:
       - name: Download LTX-2.3 checkpoint and spatial upscaler
         run: |
           set -euo pipefail
-          ID="${{ steps.rent.outputs.instance_id }}"; URL=$(vastai ssh-url "$ID"); HOST=$(echo "$URL" | sed -E 's#ssh://[^@]+@([^:]+):.*#\\1#'); PORT=$(echo "$URL" | sed -E 's#.*:([0-9]+)$#\\1#')
+          ID="${{ steps.rent.outputs.instance_id }}"; URL=$(vastai ssh-url "$ID"); HOST=$(python -c 'from urllib.parse import urlparse; import sys; print(urlparse(sys.argv[1]).hostname or "")' "$URL"); PORT=$(python -c 'from urllib.parse import urlparse; import sys; print(urlparse(sys.argv[1]).port or "")' "$URL")
           echo "Downloading official LTX-2.3 distilled checkpoint and spatial upscaler on the GPU worker."
           ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" "apt-get update && apt-get install -y ffmpeg && python -m pip install --upgrade huggingface_hub && mkdir -p /workspace/models/ltx23 && HF_TOKEN='$HF_TOKEN' python -c \"import os; from huggingface_hub import hf_hub_download; repo='Lightricks/LTX-2.3'; dest='/workspace/models/ltx23'; hf_hub_download(repo_id=repo, filename='ltx-2.3-22b-distilled-1.1.safetensors', local_dir=dest, token=os.environ['HF_TOKEN']); hf_hub_download(repo_id=repo, filename='ltx-2.3-spatial-upscaler-x2-1.1.safetensors', local_dir=dest, token=os.environ['HF_TOKEN'])\" && ls -lh /workspace/models/ltx23/*.safetensors"
       - name: Install pinned workspace and run NEO-LTX tests
         run: |
           set -euo pipefail
-          ID="${{ steps.rent.outputs.instance_id }}"; URL=$(vastai ssh-url "$ID"); HOST=$(echo "$URL" | sed -E 's#ssh://[^@]+@([^:]+):.*#\\1#'); PORT=$(echo "$URL" | sed -E 's#.*:([0-9]+)$#\\1#')
+          ID="${{ steps.rent.outputs.instance_id }}"; URL=$(vastai ssh-url "$ID"); HOST=$(python -c 'from urllib.parse import urlparse; import sys; print(urlparse(sys.argv[1]).hostname or "")' "$URL"); PORT=$(python -c 'from urllib.parse import urlparse; import sys; print(urlparse(sys.argv[1]).port or "")' "$URL")
           ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'python -m pip install --upgrade uv pytest huggingface_hub && cd /workspace/NEO-LTX-2.3 && uv sync'
           echo "Running Shona, LTX sampler callback, checkpoint, and preview tests."
           ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'cd /workspace/NEO-LTX-2.3 && uv run --no-sync pytest -q neo/speech/test_dialogue.py packages/ltx-pipelines/tests/ltx_pipelines/test_sampler_callbacks.py packages/ltx-pipelines/tests/ltx_pipelines/test_previews.py'
       - name: Download Gemma 3 text encoder
         run: |
           set -euo pipefail
-          ID="${{ steps.rent.outputs.instance_id }}"; URL=$(vastai ssh-url "$ID"); HOST=$(echo "$URL" | sed -E 's#ssh://[^@]+@([^:]+):.*#\\1#'); PORT=$(echo "$URL" | sed -E 's#.*:([0-9]+)$#\\1#')
+          ID="${{ steps.rent.outputs.instance_id }}"; URL=$(vastai ssh-url "$ID"); HOST=$(python -c 'from urllib.parse import urlparse; import sys; print(urlparse(sys.argv[1]).hostname or "")' "$URL"); PORT=$(python -c 'from urllib.parse import urlparse; import sys; print(urlparse(sys.argv[1]).port or "")' "$URL")
           echo "Downloading gated Gemma 3 encoder. HF_TOKEN is used only on the rented worker and is not written to the repository."
           ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" "HF_TOKEN='$HF_TOKEN' python -c \"import os; from huggingface_hub import snapshot_download; snapshot_download(repo_id='google/gemma-3-12b-it-qat-q4_0-unquantized', local_dir='/workspace/models/gemma3', token=os.environ['HF_TOKEN'])\""
       - name: Run actual LTX-2.3 text-to-video inference
         run: |
           set -euo pipefail
-          ID="${{ steps.rent.outputs.instance_id }}"; URL=$(vastai ssh-url "$ID"); HOST=$(echo "$URL" | sed -E 's#ssh://[^@]+@([^:]+):.*#\\1#'); PORT=$(echo "$URL" | sed -E 's#.*:([0-9]+)$#\\1#')
+          ID="${{ steps.rent.outputs.instance_id }}"; URL=$(vastai ssh-url "$ID"); HOST=$(python -c 'from urllib.parse import urlparse; import sys; print(urlparse(sys.argv[1]).hostname or "")' "$URL"); PORT=$(python -c 'from urllib.parse import urlparse; import sys; print(urlparse(sys.argv[1]).port or "")' "$URL")
           echo "Running a real 9-frame 512x512 audio/video generation with FP8 cast and CPU offload."
           ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'cd /workspace/NEO-LTX-2.3 && mkdir -p /workspace/neo-state/test-output && uv run --no-sync python -m ltx_pipelines.distilled --distilled-checkpoint-path /workspace/models/ltx23/ltx-2.3-22b-distilled-1.1.safetensors --gemma-root /workspace/models/gemma3 --spatial-upsampler-path /workspace/models/ltx23/ltx-2.3-spatial-upscaler-x2-1.1.safetensors --quantization fp8-cast --offload cpu --prompt "A cinematic test shot of a small red car driving slowly along a quiet country road at sunrise, stable camera, realistic lighting." --seed 42 --num-frames 9 --height 512 --width 512 --output-path /workspace/neo-state/test-output/neo-ltx23-smoke.mp4'
           ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'test -s /workspace/neo-state/test-output/neo-ltx23-smoke.mp4 && ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 /workspace/neo-state/test-output/neo-ltx23-smoke.mp4'
