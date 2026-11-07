@@ -1,10 +1,14 @@
 # Runtime research
 
-Planned responsibilities:
-- job lifecycle and durable production state
-- DeepSeek pre-generation planning
-- observer callbacks at supported sampler boundaries
-- safe pause/resume at validated boundaries
-- benchmark and output recording
+Implemented runtime pieces:
+- crash-safe production-state persistence
+- bounded CPU latent checkpoint snapshots
+- sampler-step observation for synchronized audio/video states
+- unpatchified, post-stage RGB preview decoding at a safe VAE boundary
+- optional DeepSeek visual review with production-state persistence
 
-Live denoising feedback is experimental. Any intervention must use an explicit conditioning mechanism and controlled tests; an LLM must not arbitrarily edit diffusion latents.
+The distilled pipeline's optional `preview_callback` runs after each selected stage-2 chunk has completed and its transformer context has exited. `preview_every_n_chunks` controls preview frequency. Decoded images are written to a bounded preview directory and passed to the callback.
+
+`ReasoningPreviewAdapter` can be passed directly as that callback. It sends the preview and production state to DeepSeek, then stores the resulting DirectorPlan. DeepSeek calls are synchronous between chunks, so they pause progression to the next chunk.
+
+The returned plan is data only. Any intervention must be translated into an explicit supported conditioning mechanism at a later chunk boundary and tested. An LLM must not arbitrarily edit diffusion latents. Long-form generation, automatic plan application, and GPU end-to-end validation remain open work.
