@@ -1,8 +1,9 @@
 """Sparse decoded RGB previews for completed LTX diffusion chunks.
 
-Preview decoding deliberately happens after DiffusionStage returns, so the
-transformer has been released before the video VAE is built. This avoids
-holding the denoiser and VAE in VRAM at the same time.
+Preview decoding happens after DiffusionStage returns, so its model context has
+exited before the video VAE is built. Under the default TRIM allocation policy,
+the transformer is released first. An explicit DEFER policy may retain
+GPU-resident weights and increase preview-time VRAM use.
 """
 from __future__ import annotations
 
