@@ -139,7 +139,7 @@ jobs:
           mkdir -p ~/.ssh
           ssh-keygen -R "[$HOST]:$PORT" >/dev/null 2>&1 || true
           for i in $(seq 1 30); do
-            if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 -p "$PORT" root@"$HOST" 'nvidia-smi && python -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0)); print(round(torch.cuda.get_device_properties(0).total_memory/1024**3,1), \"GiB\")"' ; then
+            if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 -p "$PORT" root@"$HOST" 'set -e; nvidia-smi; python -c "import torch; assert torch.cuda.is_available(); print(torch.__version__); print(torch.cuda.get_device_name(0)); print(round(torch.cuda.get_device_properties(0).total_memory/1024**3,1), \"GiB\")"; apt-get update -qq; apt-get install -y -qq git; git clone --depth 1 --branch neo-reasoning-dev https://github.com/tinae2004/NEO-LTX-2.3.git /workspace/NEO-LTX-2.3; python -m pip install -q pytest numpy soundfile; cd /workspace/NEO-LTX-2.3; python -m pytest -q neo/speech/test_dialogue.py' ; then
               exit 0
             fi
             sleep 10
