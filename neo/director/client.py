@@ -80,15 +80,15 @@ class DeepSeekDirector:
                 )
             encoded = base64.b64encode(image_bytes).decode("ascii")
             user_content = [
-                    {"type": "text", "text": user_text},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:{mime_type};base64,{encoded}",
-                            "detail": "low",
-                        },
+                {"type": "text", "text": user_text},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime_type};base64,{encoded}",
+                        "detail": "low",
                     },
-                ]
+                },
+            ]
 
         payload = {
             "model": self.model,
