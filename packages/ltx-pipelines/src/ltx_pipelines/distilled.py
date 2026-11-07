@@ -426,6 +426,10 @@ class DistilledPipeline:
         ``chunk_config=None`` plans a single chunk covering the snapped clip.
         ``step_callback``, when supplied, receives stage name, 1-based chunk index,
         completed step, total steps, and the current optional video/audio latent states.
+        ``preview_callback``, when supplied, receives the stage name, 1-based chunk
+        index and PNG path for selected stage-2 chunk previews. Preview generation
+        happens after the denoiser stage has exited. ``preview_every_n_chunks``
+        controls how often VAE previews are decoded.
         """
         chunks, num_frames, tiling_config = self.stream_chunks(
             prompt=prompt,
@@ -485,7 +489,9 @@ class DistilledPipeline:
         ``chunk_config=None`` plans a single chunk covering the snapped clip, which is
         how :meth:`__call__` runs. The returned frame count is the stitched length the chunks
         actually decode to, which floors ``num_frames`` to the causal grid the same way the
-        plan does.
+        plan does. When supplied, ``preview_callback`` receives a PNG path once per
+        selected stage-2 chunk after the transformer has exited. Set
+        ``preview_every_n_chunks`` to reduce preview decode and callback overhead.
         """
         if preview_every_n_chunks < 1:
             raise ValueError("preview_every_n_chunks must be >= 1")
