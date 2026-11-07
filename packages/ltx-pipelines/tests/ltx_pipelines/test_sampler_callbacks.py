@@ -1,5 +1,6 @@
 """Sampler checkpoint callback contract tests for synchronized audio/video updates."""
 from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 import torch
@@ -196,8 +197,8 @@ def test_noop_callback_does_not_change_final_latents(sampler: Callable[..., obje
 
 
 
-def test_checkpoint_store_skips_intermediate_steps_and_keeps_final(tmp_path: object) -> None:
-    store = LatentCheckpointStore(tmp_path, every_n_steps=3, max_snapshots=4)  # type: ignore[arg-type]
+def test_checkpoint_store_skips_intermediate_steps_and_keeps_final(tmp_path: Path) -> None:
+    store = LatentCheckpointStore(tmp_path, every_n_steps=3, max_snapshots=4)
     video = _latent_state(3.0)
     audio = _latent_state(4.0)
 
@@ -216,8 +217,8 @@ def test_checkpoint_store_skips_intermediate_steps_and_keeps_final(tmp_path: obj
     assert payload["modalities"]["video"]["latent"].device.type == "cpu"
 
 
-def test_checkpoint_store_is_bounded_and_sanitizes_stage_name(tmp_path: object) -> None:
-    store = LatentCheckpointStore(tmp_path, every_n_steps=1, max_snapshots=2)  # type: ignore[arg-type]
+def test_checkpoint_store_is_bounded_and_sanitizes_stage_name(tmp_path: Path) -> None:
+    store = LatentCheckpointStore(tmp_path, every_n_steps=1, max_snapshots=2)
     state = _latent_state()
 
     first = store("../unsafe/stage", 1, 1, 3, state, None)
@@ -228,4 +229,4 @@ def test_checkpoint_store_is_bounded_and_sanitizes_stage_name(tmp_path: object) 
     assert first.name.startswith("unsafe_stage_")
     assert not first.exists()
     assert second.exists() and third.exists()
-    assert len(list(tmp_path.glob("*.pt"))) == 2  # type: ignore[union-attr]
+    assert len(list(tmp_path.glob("*.pt"))) == 2
