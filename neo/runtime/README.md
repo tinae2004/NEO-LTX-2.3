@@ -11,4 +11,4 @@ The distilled pipeline's optional `preview_callback` runs after each selected st
 
 `ReasoningPreviewAdapter` can be passed directly as that callback. It sends the preview and production state to DeepSeek, then stores the resulting DirectorPlan. DeepSeek calls are synchronous between chunks, so they pause progression to the next chunk.
 
-The returned plan is data only. Any intervention must be translated into an explicit supported conditioning mechanism at a later chunk boundary and tested. An LLM must not arbitrarily edit diffusion latents. Long-form generation, automatic plan application, and GPU end-to-end validation remain open work.
+With `apply_director_plans=True`, the pipeline converts the plan's visual, motion, camera and audio text into a new prompt, runs the existing Gemma PromptEncoder, and supplies its video/audio embeddings to subsequent stage-2 chunks. Image-reference application, persistent context restoration on resume, and full GPU validation remain open work. Plans never directly edit diffusion latents.
