@@ -24,6 +24,7 @@ jobs:
     env:
       VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
       NEO_WORKER_SECRET: ${{ secrets.NEO_WORKER_SECRET }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
       MAX_HOURLY_USD: ${{ inputs.max_hourly_usd }}
     steps:
       - uses: actions/checkout@v4
@@ -32,10 +33,10 @@ jobs:
       - name: Validate budget and secrets
         run: |
           set -euo pipefail
-          python -c 'import os; c=float(os.environ["MAX_HOURLY_USD"]); assert 0<c<=0.40, "Budget must not exceed $0.40/h"; assert os.environ.get("VAST_API_KEY"); assert len(os.environ.get("NEO_WORKER_SECRET",""))>=32'
+          python -c 'import os; c=float(os.environ["MAX_HOURLY_USD"]); assert 0<c<=0.40, "Budget must not exceed $0.40/h"; assert os.environ.get("VAST_API_KEY"); assert len(os.environ.get("NEO_WORKER_SECRET",""))>=32; assert os.environ.get("HF_TOKEN"), "Add HF_TOKEN GitHub Actions secret after accepting the LTX-2.3 and Gemma model terms"'
       - name: Install tools
         run: |
-          python -m pip install --upgrade requests vastai
+          python -m pip install --upgrade requests vastai huggingface_hub
           sudo apt-get update && sudo apt-get install -y openssh-client aria2
       - name: Pull all current offers and select a 48GB+ GPU
         id: select
@@ -70,11 +71,33 @@ jobs:
           set -euo pipefail; ID="${{ steps.rent.outputs.instance_id }}"
           for i in $(seq 1 60); do echo "BOOT CHECK $i/60 — instance $ID"; URL=$(vastai ssh-url "$ID" 2>/dev/null || true); if [ -n "$URL" ]; then HOST=$(echo "$URL" | sed -E 's#ssh://[^@]+@([^:]+):.*#\1#'); PORT=$(echo "$URL" | sed -E 's#.*:([0-9]+)$#\1#'); mkdir -p ~/.ssh; ssh-keygen -R "[$HOST]:$PORT" >/dev/null 2>&1 || true; if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 -p "$PORT" root@"$HOST" 'nvidia-smi'; then echo "GPU BOOTED — NVIDIA DRIVER VERIFIED"; exit 0; fi; fi; sleep 20; done
           echo "GPU boot timeout. Instance ID $ID retained for inspection."; exit 1
-      - name: Transfer LTX-2.3 checkpoint with progress
+      - name: Download LTX-2.3 checkpoint and spatial upscaler
         run: |
-          set -euo pipefail; ID="${{ steps.rent.outputs.instance_id }}"; URL=$(vastai ssh-url "$ID"); HOST=$(echo "$URL" | sed -E 's#ssh://[^@]+@([^:]+):.*#\1#'); PORT=$(echo "$URL" | sed -E 's#.*:([0-9]+)$#\1#')
-          echo "Starting checkpoint transfer on rented GPU. GitHub remains the code/control plane; checkpoint source is the official Lightricks release."
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'apt-get update && apt-get install -y aria2 && mkdir -p /workspace/models/ltx23 && cd /workspace/models/ltx23 && if [ ! -s ltx-2.3-22b-distilled-1.1.safetensors ]; then aria2c -c -x 8 -s 8 --console-log-level=notice -o ltx-2.3-22b-distilled-1.1.safetensors https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-22b-distilled-1.1.safetensors; else echo "Checkpoint already present; skipping transfer."; fi && ls -lh ltx-2.3-22b-distilled-1.1.safetensors'
+          set -euo pipefail
+          ID="${{ steps.rent.outputs.instance_id }}"; URL=$(vastai ssh-url "$ID"); HOST=$(echo "$URL" | sed -E 's#ssh://[^@]+@([^:]+):.*#\\1#'); PORT=$(echo "$URL" | sed -E 's#.*:([0-9]+)$#\\1#')
+          echo "Downloading official LTX-2.3 distilled checkpoint and spatial upscaler on the GPU worker."
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'apt-get update && apt-get install -y aria2 && mkdir -p /workspace/models/ltx23 && cd /workspace/models/ltx23 && aria2c -c -x 8 -s 8 --console-log-level=notice -o ltx-2.3-22b-distilled-1.1.safetensors https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-22b-distilled-1.1.safetensors && aria2c -c -x 8 -s 8 --console-log-level=notice -o ltx-2.3-spatial-upscaler-x2-1.1.safetensors https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-spatial-upscaler-x2-1.1.safetensors && ls -lh *.safetensors'
+      - name: Install pinned workspace and run NEO-LTX tests
+        run: |
+          set -euo pipefail
+          ID="${{ steps.rent.outputs.instance_id }}"; URL=$(vastai ssh-url "$ID"); HOST=$(echo "$URL" | sed -E 's#ssh://[^@]+@([^:]+):.*#\\1#'); PORT=$(echo "$URL" | sed -E 's#.*:([0-9]+)$#\\1#')
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'python -m pip install --upgrade uv pytest huggingface_hub && cd /workspace/NEO-LTX-2.3 && uv sync --frozen'
+          echo "Running Shona, LTX sampler callback, checkpoint, and preview tests."
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'cd /workspace/NEO-LTX-2.3 && uv run --no-sync pytest -q neo/speech/test_dialogue.py packages/ltx-pipelines/tests/ltx_pipelines/test_sampler_callbacks.py packages/ltx-pipelines/tests/ltx_pipelines/test_previews.py'
+      - name: Download Gemma 3 text encoder
+        run: |
+          set -euo pipefail
+          ID="${{ steps.rent.outputs.instance_id }}"; URL=$(vastai ssh-url "$ID"); HOST=$(echo "$URL" | sed -E 's#ssh://[^@]+@([^:]+):.*#\\1#'); PORT=$(echo "$URL" | sed -E 's#.*:([0-9]+)$#\\1#')
+          echo "Downloading gated Gemma 3 encoder. HF_TOKEN is used only on the rented worker and is not written to the repository."
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" "HF_TOKEN='$HF_TOKEN' python -c \"import os; from huggingface_hub import snapshot_download; snapshot_download(repo_id='google/gemma-3-12b-it-qat-q4_0-unquantized', local_dir='/workspace/models/gemma3', token=os.environ['HF_TOKEN'])\""
+      - name: Run actual LTX-2.3 text-to-video inference
+        run: |
+          set -euo pipefail
+          ID="${{ steps.rent.outputs.instance_id }}"; URL=$(vastai ssh-url "$ID"); HOST=$(echo "$URL" | sed -E 's#ssh://[^@]+@([^:]+):.*#\\1#'); PORT=$(echo "$URL" | sed -E 's#.*:([0-9]+)$#\\1#')
+          echo "Running a real 9-frame 512x512 audio/video generation with FP8 cast and CPU offload."
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'cd /workspace/NEO-LTX-2.3 && mkdir -p /workspace/neo-state/test-output && uv run --no-sync python -m ltx_pipelines.distilled --distilled-checkpoint-path /workspace/models/ltx23/ltx-2.3-22b-distilled-1.1.safetensors --gemma-root /workspace/models/gemma3 --spatial-upsampler-path /workspace/models/ltx23/ltx-2.3-spatial-upscaler-x2-1.1.safetensors --quantization fp8-cast --offload cpu --prompt "A cinematic test shot of a small red car driving slowly along a quiet country road at sunrise, stable camera, realistic lighting." --seed 42 --num-frames 9 --height 512 --width 512 --output-path /workspace/neo-state/test-output/neo-ltx23-smoke.mp4'
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'test -s /workspace/neo-state/test-output/neo-ltx23-smoke.mp4 && ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 /workspace/neo-state/test-output/neo-ltx23-smoke.mp4'
+          echo "PASS: a real LTX-2.3 MP4 was generated and ffprobe validated it."
       - name: Upload deployment record
         if: always()
         uses: actions/upload-artifact@v4
@@ -86,5 +109,5 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
       - name: Destroy if keep is disabled
-        if: always() && inputs.keep_gpu != true && steps.rent.outputs.instance_id != ''
+        if: always() && steps.rent.outputs.instance_id != '' && (inputs.keep_gpu != true || job.status != 'success')
         run: vastai destroy instance "${{ steps.rent.outputs.instance_id }}"
