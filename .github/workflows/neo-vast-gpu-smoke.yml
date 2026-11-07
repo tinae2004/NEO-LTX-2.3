@@ -142,7 +142,7 @@ jobs:
           mkdir -p ~/.ssh
           ssh-keygen -R "[$HOST]:$PORT" >/dev/null 2>&1 || true
           for i in $(seq 1 30); do
-            if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 -p "$PORT" root@"$HOST" 'set -e; nvidia-smi; python -c "import torch; assert torch.cuda.is_available(); print(torch.__version__); print(torch.cuda.get_device_name(0)); print(round(torch.cuda.get_device_properties(0).total_memory/1024**3,1), \"GiB\")"; apt-get update -qq; apt-get install -y -qq git; git clone --depth 1 --branch neo-reasoning-dev https://github.com/tinae2004/NEO-LTX-2.3.git /workspace/NEO-LTX-2.3; python -m pip install -q pytest numpy soundfile; cd /workspace/NEO-LTX-2.3; python -m pytest -q neo/speech/test_dialogue.py' ; then
+            if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 -p "$PORT" root@"$HOST" 'set -e; nvidia-smi; python -c "import torch; assert torch.cuda.is_available(); print(torch.__version__); print(torch.cuda.get_device_name(0)); print(round(torch.cuda.get_device_properties(0).total_memory/1024**3,1), \"GiB\")"' ; then
               exit 0
             fi
             sleep 10
@@ -181,6 +181,34 @@ jobs:
           echo "Worker API did not become reachable within 30 minutes."
           exit 1
 
+ 
+      - name: Run Shona unit tests through persistent worker API
+        shell: bash
+        run: |
+          set -euo pipefail
+          INSTANCE_ID="$(cat instance_id.txt)"
+          INSTANCE="$(vastai show instance "$INSTANCE_ID" --raw)"
+          API_URL="$(python - "$INSTANCE" <<'PY'
+          import json,sys
+          d=json.loads(sys.argv[1]); ip=d.get("public_ipaddr") or d.get("public_ip")
+          ports=d.get("ports") or {}; entries=ports.get("8765/tcp") or ports.get("8765") or []
+          if isinstance(entries,dict): entries=[entries]
+          port=(entries[0].get("HostPort") or entries[0].get("host_port")) if entries else None
+          if ip and port: print("http://{}:{}".format(ip,port))
+          PY
+          )"
+          RESPONSE="$(curl -fsS --max-time 15 -X POST -H "Authorization: Bearer $NEO_WORKER_SECRET" -H "Content-Type: application/json" -d '{"task":"shona_tests"}' "$API_URL/v1/jobs")"
+          JOB_ID="$(python -c 'import json,sys; print(json.load(sys.stdin)["job_id"])' <<< "$RESPONSE")"
+          for i in $(seq 1 120); do
+            JOB="$(curl -fsS --max-time 20 -H "Authorization: Bearer $NEO_WORKER_SECRET" "$API_URL/v1/jobs/$JOB_ID")"
+            STATUS="$(python -c 'import json,sys; print(json.load(sys.stdin)["status"])' <<< "$JOB")"
+            echo "Shona test job: $STATUS"
+            if [ "$STATUS" = "succeeded" ]; then echo "$JOB" > shona-tests-result.json; exit 0; fi
+            if [ "$STATUS" = "failed" ]; then echo "$JOB" > shona-tests-result.json; exit 1; fi
+            sleep 5
+          done
+          echo "Shona tests timed out."; exit 1
+
       - name: Upload test summary
         if: always()
         uses: actions/upload-artifact@v4
@@ -190,6 +218,7 @@ jobs:
             instance_id.txt
             selected_offer.txt
             worker-gpu.json
+            shona-tests-result.json
           if-no-files-found: ignore
           retention-days: 7
 
@@ -202,7 +231,7 @@ jobs:
             vastai set api-key "$VAST_API_KEY"
             INSTANCE_ID="$(cat instance_id.txt)"
             echo "Destroying temporary NEO test instance $INSTANCE_ID"
-            vastai destroy instance "$INSTANCE_ID" || true
+            vastai destroy instance "$INSTANCE_ID" -y || true
           else
             echo "No recorded instance ID to clean up."
           fi
