@@ -28,7 +28,6 @@ jobs:
     timeout-minutes: 120
     env:
       VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
-      NEO_WORKER_SECRET: ${{ secrets.NEO_WORKER_SECRET }}
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       MAX_HOURLY_USD: ${{ inputs.max_hourly_usd }}
       MAX_BANDWIDTH_USD_PER_GB: ${{ inputs.max_bandwidth_usd_per_gb }}
@@ -39,7 +38,7 @@ jobs:
       - name: Validate budget and secrets
         run: |
           set -euo pipefail
-          python -c 'import os; c=float(os.environ["MAX_HOURLY_USD"]); b=float(os.environ["MAX_BANDWIDTH_USD_PER_GB"]); assert 0<c<=0.40, "Budget must not exceed $0.40/h"; assert 0<b<=0.03, "Bandwidth cap must be >0 and <= $0.03/GB"; assert os.environ.get("VAST_API_KEY"); assert len(os.environ.get("NEO_WORKER_SECRET",""))>=32; assert os.environ.get("HF_TOKEN"), "Add HF_TOKEN GitHub Actions secret after accepting the LTX-2.3 and Gemma model terms"'
+          python -c 'import os; c=float(os.environ["MAX_HOURLY_USD"]); b=float(os.environ["MAX_BANDWIDTH_USD_PER_GB"]); assert 0<c<=0.40, "Budget must not exceed $0.40/h"; assert 0<b<=0.03, "Bandwidth cap must be >0 and <= $0.03/GB"; assert os.environ.get("VAST_API_KEY"); assert os.environ.get("HF_TOKEN"), "Add HF_TOKEN GitHub Actions secret after accepting the LTX-2.3 and Gemma model terms"'
       - name: Install tools
         run: |
           python -m pip install --upgrade requests vastai huggingface_hub
@@ -102,14 +101,21 @@ jobs:
           PY
       - name: Configure Vast CLI
         run: vastai set api-key "$VAST_API_KEY"
-      - name: Rent exact selected offer
+      - name: Rent clean CUDA terminal (no startup installer)
         id: rent
         run: |
           set -euo pipefail
-          vastai create instance "${{ steps.select.outputs.offer_id }}" --image "pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime" --disk 200 --ssh --direct --cancel-unavail --env "-e NEO_WORKER_SECRET=$NEO_WORKER_SECRET -e NEO_WORKER_ROOT=/workspace/NEO-LTX-2.3 -e NEO_WORKER_STATE=/workspace/neo-state -e NEO_REPO_BRANCH=neo-reasoning-dev -p 8765:8765" --onstart ./neo/worker/onstart.sh --label "NEO-AUTO-${GITHUB_RUN_ID}" > /tmp/neo-vast-create.log 2>&1 || { echo "Vast create failed; inspect account inventory."; exit 1; }
-          for i in $(seq 1 24); do ID=$(vastai show instances --raw | python -c 'import json,sys; a=json.load(sys.stdin); a=a if isinstance(a,list) else a.get("instances",[]); z=[x for x in a if str(x.get("label"," ")).endswith("'"$GITHUB_RUN_ID"'")]; print(z[-1]["id"] if z else "")'); [ -n "$ID" ] && break; sleep 5; done
+          echo "Creating a clean CUDA terminal only. No NEO setup or model downloads run during boot."
+          vastai create instance "${{ steps.select.outputs.offer_id }}" --image "nvidia/cuda:12.4.1-devel-ubuntu22.04" --disk 200 --ssh --direct --cancel-unavail --label "NEO-AUTO-${GITHUB_RUN_ID}" > /tmp/neo-vast-create.log 2>&1 || { echo "Vast create failed; inspect account inventory."; exit 1; }
+          for i in $(seq 1 24); do
+            ID=$(vastai show instances --raw | python -c 'import json,sys; a=json.load(sys.stdin); a=a if isinstance(a,list) else a.get("instances",[]); z=[x for x in a if str(x.get("label"," ")).endswith("'"$GITHUB_RUN_ID"'")]; print(z[-1]["id"] if z else "")')
+            [ -n "$ID" ] && break
+            sleep 5
+          done
           test -n "${ID:-}" || { echo "Instance ID unresolved; check Vast inventory for NEO-AUTO-${GITHUB_RUN_ID}"; exit 1; }
-          echo "$ID" > instance_id.txt; echo "instance_id=$ID" >> "$GITHUB_OUTPUT"; echo "RENTED INSTANCE ID: $ID"
+          echo "$ID" > instance_id.txt
+          echo "instance_id=$ID" >> "$GITHUB_OUTPUT"
+          echo "RAW CUDA INSTANCE RENTED: $ID"
       - name: Monitor boot and CUDA (12-minute hard limit)
         run: |
           set -euo pipefail
@@ -132,6 +138,16 @@ jobs:
           done
           echo "BOOT FAILED: SSH and NVIDIA verification did not succeed within 12 minutes. Instance $ID will be destroyed automatically."
           exit 1
+      - name: Install NEO only after terminal is alive
+        run: |
+          set -euo pipefail
+          ID="${{ steps.rent.outputs.instance_id }}"
+          URL=$(vastai ssh-url "$ID")
+          HOST=$(python -c 'from urllib.parse import urlparse; import sys; print(urlparse(sys.argv[1]).hostname or "")' "$URL")
+          PORT=$(python -c 'from urllib.parse import urlparse; import sys; print(urlparse(sys.argv[1]).port or "")' "$URL")
+          echo "GPU passed SSH and nvidia-smi. Now installing OS tools and cloning NEO source."
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y git python3 python3-pip python3-venv ffmpeg aria2 build-essential && mkdir -p /workspace && git clone --depth 1 --branch neo-reasoning-dev https://github.com/tinae2004/NEO-LTX-2.3.git /workspace/NEO-LTX-2.3 && python3 -m pip install --upgrade pip uv huggingface_hub pytest'
+          echo "NEO source cloned and base dependencies installed after successful GPU boot."
       - name: Download LTX-2.3 checkpoint and spatial upscaler
         run: |
           set -euo pipefail
