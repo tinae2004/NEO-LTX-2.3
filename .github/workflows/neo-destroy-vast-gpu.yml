@@ -34,5 +34,5 @@ jobs:
           set -euo pipefail
           vastai set api-key "$VAST_API_KEY"
           echo "Requesting destruction of Vast instance $INSTANCE_ID"
-          vastai destroy instance "$INSTANCE_ID"
+          vastai destroy instance "$INSTANCE_ID" -y --raw
           echo "Destroy command submitted for instance $INSTANCE_ID"
