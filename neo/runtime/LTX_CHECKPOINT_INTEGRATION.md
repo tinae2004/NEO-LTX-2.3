@@ -100,3 +100,60 @@ The following still require separate implementation and validation:
 
 No claim is made that DeepSeek can inspect every GPU step in real time or modify
 model latents safely.
+
+## Decoded stage previews and DeepSeek vision
+
+Sampler callbacks still receive patchified live tokens. For visual inspection,
+use the separate distilled-pipeline preview callback. It runs once per selected
+stage-2 chunk, after the diffusion stage has returned, the transformer context
+has exited, and the video latent has been unpatchified. The VAE is therefore
+not built while the denoiser is resident.
+
+```python
+from neo.director.client import DeepSeekDirector
+from neo.runtime.observer import ReasoningObserver, ReasoningPreviewAdapter
+from neo.runtime.state import ProductionState
+
+production = ProductionState("neo_vault/production.json")
+director = DeepSeekDirector()  # default model: deepseek-flash
+observer = ReasoningObserver(director)
+reasoning = ReasoningPreviewAdapter(
+    observer,
+    brief="Continue the scene while preserving character and prop continuity.",
+    production_state=production,
+    every_n_chunks=2,
+)
+
+pipeline.stream_chunks(
+    prompt="A continuous cinematic shot",
+    seed=42,
+    height=512,
+    width=768,
+    frame_rate=24,
+    images=[],
+    num_frames=241,
+    preview_callback=reasoning,
+    preview_directory="neo_vault/previews",
+    preview_every_n_chunks=2,
+)
+```
+
+The writer saves the middle RGB frame as a PNG and keeps at most eight preview
+files per writer instance. The pipeline defaults to one preview per stage-2
+chunk; raise preview_every_n_chunks to reduce VAE decode and DeepSeek request
+overhead. The DeepSeek adapter can be configured with the same every_n_chunks
+interval. Preview generation and DeepSeek calls are synchronous between chunks,
+not inside denoising steps, so they pause progression to the next chunk but do
+not block an active sampler loop.
+
+The director client attaches the PNG bytes as an image input to DeepSeek's
+vision-capable chat-completions request (default model deepseek-flash). It also
+sends the production-state snapshot, current stage/chunk and scene brief. A
+missing preview file is an error rather than silently claiming visual review.
+
+The returned DirectorPlan is persisted as data in ProductionState. It is not
+applied to a running LTX pipeline: changing visual prompts, camera direction,
+references or audio requires a separate adapter that translates approved plan
+fields into supported LTX conditionings at a later chunk boundary. The preview
+callback is also not a live per-denoising-step vision loop.
+
