@@ -73,8 +73,8 @@ jobs:
       - name: Transfer LTX-2.3 checkpoint with progress
         run: |
           set -euo pipefail; ID="${{ steps.rent.outputs.instance_id }}"; URL=$(vastai ssh-url "$ID"); HOST=$(echo "$URL" | sed -E 's#ssh://[^@]+@([^:]+):.*#\1#'); PORT=$(echo "$URL" | sed -E 's#.*:([0-9]+)$#\1#')
-          echo "Starting checkpoint transfer on rented GPU. Model weights are downloaded from the official Lightricks model repository; GitHub remains the code/control plane."
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'mkdir -p /workspace/models/ltx23 && cd /workspace/models/ltx23 && if [ ! -s ltx-2.3-22b-distilled-1.1.safetensors ]; then aria2c -c -x 8 -s 8 --console-log-level=notice -o ltx-2.3-22b-distilled-1.1.safetensors https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-22b-distilled-1.1.safetensors; else echo "Checkpoint already present; skipping transfer."; fi && ls -lh ltx-2.3-22b-distilled-1.1.safetensors'
+          echo "Starting checkpoint transfer on rented GPU. GitHub remains the code/control plane; checkpoint source is the official Lightricks release."
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'apt-get update && apt-get install -y aria2 && mkdir -p /workspace/models/ltx23 && cd /workspace/models/ltx23 && if [ ! -s ltx-2.3-22b-distilled-1.1.safetensors ]; then aria2c -c -x 8 -s 8 --console-log-level=notice -o ltx-2.3-22b-distilled-1.1.safetensors https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-22b-distilled-1.1.safetensors; else echo "Checkpoint already present; skipping transfer."; fi && ls -lh ltx-2.3-22b-distilled-1.1.safetensors'
       - name: Upload deployment record
         if: always()
         uses: actions/upload-artifact@v4
