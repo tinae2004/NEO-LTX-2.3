@@ -104,6 +104,50 @@ PipelineStepCallback = Callable[
 PipelinePreviewCallback = Callable[[str, int, Path], Any]
 
 
+def _director_plan_prompt(plan: dict[str, Any]) -> str:
+    """Render a validated director plan as ordinary LTX text conditioning."""
+    sections: list[str] = []
+    for key, label in (
+        ("visual_prompt", "Visual direction"),
+        ("motion_direction", "Action and motion"),
+        ("camera_direction", "Camera direction"),
+    ):
+        value = plan.get(key)
+        if isinstance(value, str) and value.strip():
+            sections.append(f"{label}: {value.strip()}")
+
+    audio = plan.get("audio", {})
+    if isinstance(audio, dict):
+        audio_lines: list[str] = []
+        for key, label in (
+            ("dialogue", "Dialogue"),
+            ("sound_effects", "Sound effects"),
+            ("music", "Music"),
+            ("ambience", "Ambience"),
+        ):
+            value = audio.get(key)
+            if isinstance(value, str) and value.strip():
+                audio_lines.append(f"{label}: {value.strip()}")
+            elif isinstance(value, list):
+                audio_lines.extend(
+                    f"{label}: {item.strip()}"
+                    for item in value
+                    if isinstance(item, str) and item.strip()
+                )
+        if audio_lines:
+            sections.append("Audio direction:\\n" + "\\n".join(audio_lines))
+
+    notes = plan.get("continuity_notes", [])
+    if isinstance(notes, list):
+        clean_notes = [note.strip() for note in notes if isinstance(note, str) and note.strip()]
+        if clean_notes:
+            sections.append("Continuity constraints: " + "; ".join(clean_notes))
+
+    if not sections:
+        raise ValueError("Director plan contains no usable visual, motion, camera, or audio direction")
+    return "\\n\\n".join(sections)
+
+
 def _stage_step_callback(
     callback: PipelineStepCallback | None, stage_name: str
 ) -> Callable[[int, int, LatentState | None, LatentState | None], None] | None:
@@ -418,6 +462,7 @@ class DistilledPipeline:
         preview_callback: PipelinePreviewCallback | None = None,
         preview_directory: str | Path | None = None,
         preview_every_n_chunks: int = 1,
+        apply_director_plans: bool = False,
     ) -> PipelineOutput:
         """Generate a video.
         Each stage samples according to ``self.use_ancestral_sampler``: the ancestral (SDE) Euler
@@ -452,6 +497,7 @@ class DistilledPipeline:
             preview_callback=preview_callback,
             preview_directory=preview_directory,
             preview_every_n_chunks=preview_every_n_chunks,
+            apply_director_plans=apply_director_plans,
         )
         return pipeline_output_from_chunks(chunks, num_frames=num_frames, tiling_config=tiling_config)
 
@@ -478,6 +524,7 @@ class DistilledPipeline:
         preview_callback: PipelinePreviewCallback | None = None,
         preview_directory: str | Path | None = None,
         preview_every_n_chunks: int = 1,
+        apply_director_plans: bool = False,
     ) -> tuple[Iterator[PlaybackSegment], int, TilingConfig]:
         """Generate a video as a stream of decoded chunks for long clips.
         Each stage samples according to ``self.use_ancestral_sampler``, with its own noise-seed
@@ -494,6 +541,8 @@ class DistilledPipeline:
         """
         if preview_every_n_chunks < 1:
             raise ValueError("preview_every_n_chunks must be >= 1")
+        if apply_director_plans and preview_callback is None:
+            raise ValueError("apply_director_plans requires preview_callback")
 
         ctx = self._prepare_run(
             prompt=prompt,
@@ -545,6 +594,16 @@ class DistilledPipeline:
             else None
         )
 
+        active_context = {
+            "video": ctx.video_context,
+            "audio": ctx.audio_context,
+        }
+
+        def provide_context(
+            _chunk_index: int, _chunk: Chunk
+        ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+            return active_context["video"], active_context["audio"]
+
         def emit_preview(chunk_index: int, video_state: LatentState | None) -> None:
             if (
                 preview_writer is None
@@ -554,7 +613,17 @@ class DistilledPipeline:
             ):
                 return
             preview_path = preview_writer("stage_2_refine", chunk_index, video_state.latent)
-            preview_callback("stage_2_refine", chunk_index, preview_path)
+            plan = preview_callback("stage_2_refine", chunk_index, preview_path)
+            if apply_director_plans and isinstance(plan, dict):
+                directed_prompt = _director_plan_prompt(plan)
+                (encoded_context,) = self.prompt_encoder([directed_prompt])
+                active_context["video"] = encoded_context.video_encoding
+                if encoded_context.audio_encoding is not None:
+                    active_context["audio"] = encoded_context.audio_encoding
+                logger.info(
+                    "Applied DeepSeek director plan to chunks after stage-2 chunk %d",
+                    chunk_index,
+                )
 
         base = denoise_chunks(
             chunks,
@@ -575,6 +644,7 @@ class DistilledPipeline:
             fps=frame_rate,
             step_callback=_stage_step_callback(step_callback, "stage_2_refine"),
             preview_callback=emit_preview if preview_writer is not None else None,
+            context_provider=provide_context if apply_director_plans else None,
             **self._sampler_kwargs(seed, ANCESTRAL_STAGE_2_NOISE_SEED_OFFSET),
         )
         return (
