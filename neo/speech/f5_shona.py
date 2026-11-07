@@ -110,7 +110,6 @@ class F5ShonaTTS:
         self._ref_audio_proc = ref_audio
         self._ref_text_proc = ref_text
 
-    @torch.inference_mode() if False else (lambda fn: fn)
     def synthesize(self, text: str, output_path: str | Path) -> Path:
         """Synthesize one Shona dialogue segment to a 24 kHz WAV file."""
         if not text or not text.strip():
