@@ -7,6 +7,11 @@ on:
         required: true
         default: "0.40"
         type: string
+      max_bandwidth_usd_per_gb:
+        description: Maximum upload or download bandwidth price in USD per GB
+        required: true
+        default: "0.01"
+        type: string
       keep_gpu:
         description: Keep GPU after boot and model download; billing continues
         required: true
@@ -26,6 +31,7 @@ jobs:
       NEO_WORKER_SECRET: ${{ secrets.NEO_WORKER_SECRET }}
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       MAX_HOURLY_USD: ${{ inputs.max_hourly_usd }}
+      MAX_BANDWIDTH_USD_PER_GB: ${{ inputs.max_bandwidth_usd_per_gb }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,7 +54,7 @@ jobs:
           r=requests.get("https://cloud.vast.ai/api/v0/bundles/",headers={"Authorization":"Bearer "+os.environ["VAST_API_KEY"]},params={"q":json.dumps(q)},timeout=60)
           r.raise_for_status()
           payload=r.json(); offers=payload.get("offers",[]) if isinstance(payload,dict) else payload
-          cap=float(os.environ["MAX_HOURLY_USD"]); eligible=[]; rejected={"wrong_gpu":0,"not_full_gpu_or_low_vram":0,"over_budget":0,"download_below_1000":0,"unreliable":0,"missing_or_suspicious_bandwidth_cost":0,"unavailable":0}
+          cap=float(os.environ["MAX_HOURLY_USD"]); max_bw=float(os.environ["MAX_BANDWIDTH_USD_PER_GB"]); eligible=[]; rejected={"wrong_gpu":0,"not_full_gpu_or_low_vram":0,"over_budget":0,"download_below_1000":0,"unreliable":0,"missing_or_invalid_bandwidth_cost":0,"bandwidth_cost_over_cap":0,"unavailable":0}
           for x in offers:
             name=str(x.get("gpu_name") or "").upper()
             if name not in ("RTX 3090","RTX 4090"): rejected["wrong_gpu"]+=1; continue
@@ -61,24 +67,32 @@ jobs:
             if down<=1000: rejected["download_below_1000"]+=1; continue
             rel=float(x.get("reliability2") or x.get("reliability") or 0)
             if rel<0.95: rejected["unreliable"]+=1; continue
-            # Vast lists per-GB transfer rates separately. Zero/missing or implausibly tiny rates are treated as suspicious, not as a bargain.
+            # Bandwidth is usage-billed in addition to GPU/storage. Prefer low, verified per-GB rates.
             down_cost=x.get("inet_down_cost"); up_cost=x.get("inet_up_cost")
             try: down_cost=float(down_cost); up_cost=float(up_cost)
-            except (TypeError,ValueError): down_cost=up_cost=0
-            if down_cost<=0.001 or up_cost<=0.001:
-              rejected["missing_or_suspicious_bandwidth_cost"]+=1
-              print("REJECT SUSPICIOUS BANDWIDTH COST | ID",x.get("id"),"down/up $/GB",down_cost,up_cost)
+            except (TypeError,ValueError):
+              rejected["missing_or_invalid_bandwidth_cost"]+=1
+              print("REJECT UNKNOWN BANDWIDTH PRICE | ID",x.get("id"),"down/up raw",down_cost,up_cost)
+              continue
+            if down_cost<=0 or up_cost<=0:
+              rejected["missing_or_invalid_bandwidth_cost"]+=1
+              print("REJECT ZERO/NEGATIVE BANDWIDTH PRICE | ID",x.get("id"),"down/up $/GB",down_cost,up_cost)
+              continue
+            if down_cost>max_bw or up_cost>max_bw:
+              rejected["bandwidth_cost_over_cap"]+=1
+              print("REJECT HIGH BANDWIDTH COST | ID",x.get("id"),"down/up $/GB",down_cost,up_cost,"max",max_bw)
               continue
             x["_neo_down_cost_gb"]=down_cost; x["_neo_up_cost_gb"]=up_cost; x["_neo_reliability"]=rel
             eligible.append(x)
           print("LIVE OFFERS RETURNED:",len(offers),"ELIGIBLE:",len(eligible))
           print("REJECTION COUNTS:",json.dumps(rejected,sort_keys=True))
           print("CANDIDATES — ID | GPU | VRAM MB | TOTAL $/h | DOWN Mbps | UP Mbps | DOWN $/GB | UP $/GB | RELIABILITY | LOCATION")
+          print("BANDWIDTH PRICE CAP: $",max_bw,"per GB in EACH direction; lower positive prices rank better.")
           for x in sorted(eligible,key=lambda z:(z["_neo_reliability"],float(z.get("inet_down") or 0),-float(z.get("dph_total") or 999999)),reverse=True):
             print(x.get("id"),"|",x.get("gpu_name"),"|",x.get("gpu_ram"),"|",x.get("dph_total"),"|",x.get("inet_down"),"|",x.get("inet_up"),"|",x.get("_neo_down_cost_gb"),"|",x.get("_neo_up_cost_gb"),"|",x.get("_neo_reliability"),"|",x.get("geolocation"))
-          if not eligible: raise SystemExit("No RTX 3090/4090 full-GPU offer passed >1000 Mbps download, price, reliability and bandwidth-cost sanity checks. No rental made.")
-          # Rank reliability first, then download speed; do not reward suspiciously cheap bandwidth.
-          eligible.sort(key=lambda x:(x["_neo_reliability"],float(x.get("inet_down") or 0),float(x.get("inet_up") or 0),-float(x.get("dph_total") or 999999)),reverse=True)
+          if not eligible: raise SystemExit("No RTX 3090/4090 full-GPU offer passed >1000 Mbps download, hourly price, reliability and low-bandwidth-cost limits. No rental made.")
+          # Rank lowest verified bandwidth cost first, then reliability and download speed. Low positive rates are preferred, not rejected.
+          eligible.sort(key=lambda x:(x["_neo_down_cost_gb"]+x["_neo_up_cost_gb"],-x["_neo_reliability"],-float(x.get("inet_down") or 0),-float(x.get("inet_up") or 0),float(x.get("dph_total") or 999999)))
           selected=eligible[0]
           # Strip local ranking helper fields before saving the provider offer.
           selected.pop("_neo_down_cost_gb",None); selected.pop("_neo_up_cost_gb",None); selected.pop("_neo_reliability",None)
