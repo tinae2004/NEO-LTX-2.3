@@ -8,6 +8,7 @@ from ltx_core.types import DenoiseMask, LatentState
 from ltx_pipelines.distilled import _stage_step_callback, ancestral_sampler_kwargs
 from ltx_pipelines.utils.samplers import euler_ancestral_denoising_loop, euler_denoising_loop
 from ltx_pipelines.utils.types import DenoisedLatentResult, VideoAudio
+from neo.runtime.checkpoints import LatentCheckpointStore
 
 
 def _latent_state(value: float = 0.0) -> LatentState:
@@ -192,3 +193,39 @@ def test_noop_callback_does_not_change_final_latents(sampler: Callable[..., obje
     assert baseline.audio is not None and observed.audio is not None
     torch.testing.assert_close(baseline.video.latent, observed.video.latent)
     torch.testing.assert_close(baseline.audio.latent, observed.audio.latent)
+
+
+
+def test_checkpoint_store_skips_intermediate_steps_and_keeps_final(tmp_path: object) -> None:
+    store = LatentCheckpointStore(tmp_path, every_n_steps=3, max_snapshots=4)  # type: ignore[arg-type]
+    video = _latent_state(3.0)
+    audio = _latent_state(4.0)
+
+    assert store("stage_1_base", 1, 1, 5, video, audio) is None
+    assert store("stage_1_base", 1, 3, 5, video, audio) is not None
+    final_path = store("stage_1_base", 1, 5, 5, video, audio)
+
+    assert final_path is not None and final_path.exists()
+    payload = torch.load(final_path, map_location="cpu", weights_only=True)
+    assert payload["schema"] == "neo-latent-checkpoint-v1"
+    assert payload["stage"] == "stage_1_base"
+    assert payload["chunk"] == 1
+    assert payload["step"] == 5
+    assert payload["modalities"]["video"]["shape"] == [1, 2]
+    assert payload["modalities"]["audio"]["shape"] == [1, 2]
+    assert payload["modalities"]["video"]["latent"].device.type == "cpu"
+
+
+def test_checkpoint_store_is_bounded_and_sanitizes_stage_name(tmp_path: object) -> None:
+    store = LatentCheckpointStore(tmp_path, every_n_steps=1, max_snapshots=2)  # type: ignore[arg-type]
+    state = _latent_state()
+
+    first = store("../unsafe/stage", 1, 1, 3, state, None)
+    second = store("../unsafe/stage", 1, 2, 3, state, None)
+    third = store("../unsafe/stage", 1, 3, 3, state, None)
+
+    assert first is not None and second is not None and third is not None
+    assert first.name.startswith("unsafe_stage_")
+    assert not first.exists()
+    assert second.exists() and third.exists()
+    assert len(list(tmp_path.glob("*.pt"))) == 2  # type: ignore[union-attr]
