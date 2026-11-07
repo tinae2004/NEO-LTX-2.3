@@ -106,8 +106,10 @@ model latents safely.
 Sampler callbacks still receive patchified live tokens. For visual inspection,
 use the separate distilled-pipeline preview callback. It runs once per selected
 stage-2 chunk, after the diffusion stage has returned, the transformer context
-has exited, and the video latent has been unpatchified. The VAE is therefore
-not built while the denoiser is resident.
+has exited, and the video latent has been unpatchified. Under the default
+TRIM allocation policy, transformer weights are released before the VAE is
+built. An explicit DEFER offload policy may retain GPU weights and increase
+preview-time VRAM use.
 
 ```python
 from neo.director.client import DeepSeekDirector
