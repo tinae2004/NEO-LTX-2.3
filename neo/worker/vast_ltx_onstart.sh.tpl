@@ -9,6 +9,27 @@ GEMMA_ROOT="$MODEL_ROOT/gemma-3-12b"
 STATUS="$ROOT/bootstrap-status.json"
 mkdir -p "$ROOT" "$ROOT/videos" "$MODEL_ROOT/ltx-2.3" "$GEMMA_ROOT"
 exec >> "$ROOT/startup.log" 2>&1
+# Install the original NEO GPU control agent from the working MovieGen app.py.
+CONTROL_ROOT=/workspace/.neo_gpu_control
+mkdir -p "$CONTROL_ROOT/jobs"
+chmod 700 "$CONTROL_ROOT" "$CONTROL_ROOT/jobs"
+python - <<'PY_CONTROL_CFG'
+import os,json
+p='/workspace/.neo_gpu_control/config.json'; tmp=p+'.tmp'
+cfg={'token':os.environ.get('NEO_GPU_CONTROL_TOKEN',''),'instance_id':''}
+if len(cfg['token'])<32: raise SystemExit('NEO_GPU_CONTROL_TOKEN missing/too short')
+with open(tmp,'w') as f: json.dump(cfg,f)
+os.chmod(tmp,0o600); os.replace(tmp,p)
+PY_CONTROL_CFG
+CONTROL_B64='__CONTROL_B64__'
+printf '%s' "$CONTROL_B64" | base64 -d | python -c "import gzip,sys; sys.stdout.buffer.write(gzip.decompress(sys.stdin.buffer.read()))" > "$CONTROL_ROOT/control_api.py"
+chmod 700 "$CONTROL_ROOT/control_api.py"
+nohup bash -lc 'while true; do export NEO_GPU_CONTROL_TOKEN="$(python -c "import json;print(json.load(open(\"/workspace/.neo_gpu_control/config.json\"))[\"token\"])" )"; export NEO_GPU_CONTROL_INSTANCE_ID="$(python -c "import json;print(json.load(open(\"/workspace/.neo_gpu_control/config.json\"))[\"instance_id\"])" )"; python -u /workspace/.neo_gpu_control/control_api.py; rc=$?; echo "Control API exited rc=$rc; restarting"; sleep 2; done' >> "$CONTROL_ROOT/supervisor.log" 2>&1 </dev/null &
+echo $! > "$CONTROL_ROOT/supervisor.pid"
+for i in $(seq 1 60); do
+  if curl -fsS --max-time 2 http://127.0.0.1:8191/health >/dev/null 2>&1; then say 'NEO_GPU_CONTROL_API_READY port=8191'; break; fi
+  sleep 1
+done
 say(){ printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*"; }
 write_status(){
   python - "$STATUS" "$1" "$2" "${3:-}" <<'PY_STATUS'
