@@ -1,245 +1,359 @@
-name: NEO Auto Rent and Boot GPU
+name: NEO LTX-2.3 GPU Agent Deploy
+run-name: NEO GPU deploy • ${{ github.ref_name }} • ${{ github.run_number }}
+
 on:
   workflow_dispatch:
     inputs:
       max_hourly_usd:
-        description: Maximum total hourly price in USD
+        description: Hard maximum total GPU price per hour (USD)
         required: true
         default: "0.40"
         type: string
       max_bandwidth_usd_per_gb:
-        description: Maximum upload or download bandwidth price in USD per GB
+        description: Maximum upload/download bandwidth price per GB
         required: true
         default: "0.03"
         type: string
       keep_gpu:
-        description: Keep GPU after boot and model download; billing continues
+        description: Keep the GPU after successful readiness checks (billing continues)
         required: true
         default: true
         type: boolean
+
 permissions:
   contents: read
+
 concurrency:
-  group: neo-auto-gpu-deploy
+  group: neo-ltx-gpu-deploy
   cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     env:
       VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      NEO_WORKER_TOKEN: ${{ secrets.NEO_WORKER_SECRET }}
+      NEO_BUCKET: ${{ vars.NEO_BUCKET || 'Tinae/neo-bucket' }}
       MAX_HOURLY_USD: ${{ inputs.max_hourly_usd }}
       MAX_BANDWIDTH_USD_PER_GB: ${{ inputs.max_bandwidth_usd_per_gb }}
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout NEO deployment source
+        uses: actions/checkout@v4
         with:
-          ref: neo-reasoning-dev
-      - name: Validate budget and secrets
-        run: |
-          set -euo pipefail
-          python -c 'import os; c=float(os.environ["MAX_HOURLY_USD"]); b=float(os.environ["MAX_BANDWIDTH_USD_PER_GB"]); assert 0<c<=0.40, "Budget must not exceed $0.40/h"; assert 0<b<=0.03, "Bandwidth cap must be >0 and <= $0.03/GB"; assert os.environ.get("VAST_API_KEY"); assert os.environ.get("HF_TOKEN"), "Add HF_TOKEN GitHub Actions secret after accepting the LTX-2.3 and Gemma model terms"'
-      - name: Install tools
-        run: |
-          python -m pip install --upgrade requests vastai huggingface_hub
-          sudo apt-get update && sudo apt-get install -y openssh-client aria2
-      - name: Pull live offers and select RTX 3090 or RTX 4090
-        id: select
+          ref: main
+
+      - name: Validate deployment secrets and hard limits
+        shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
-          import os,json,requests
-          # Vast marketplace search: POST JSON filters (not GET with a nested q string).
-          # Restrict the API query itself so the result page is not filled by unrelated GPUs.
-          q={"limit":1000,"rentable":{"eq":True},"verified":{"eq":True},"gpu_name":{"in":["RTX 3090","RTX 4090"]},"num_gpus":{"eq":1},"gpu_ram":{"gte":24000},"inet_down":{"gte":1000},"reliability2":{"gte":0.95},"dph_total":{"lte":float(os.environ["MAX_HOURLY_USD"])},"order":[["dph_total","asc"]]}
-          r=requests.post("https://console.vast.ai/api/v0/bundles/",headers={"Authorization":"Bearer "+os.environ["VAST_API_KEY"],"Content-Type":"application/json"},json=q,timeout=60)
-          r.raise_for_status()
-          payload=r.json(); offers=payload.get("offers",[]) if isinstance(payload,dict) else payload
-          print("Vast POST /bundles server-side filters: verified, rentable, single RTX 3090/4090, 24GB+, >1000 Mbps, >=95% reliability, hourly cap. Returned:",len(offers))
-          cap=float(os.environ["MAX_HOURLY_USD"]); max_bw=float(os.environ["MAX_BANDWIDTH_USD_PER_GB"]); eligible=[]; rejected={"deverified_or_unverified":0,"blocked_location":0,"wrong_gpu":0,"not_full_gpu_or_low_vram":0,"over_budget":0,"download_below_1000":0,"unreliable":0,"missing_or_invalid_bandwidth_cost":0,"bandwidth_cost_over_cap":0,"unavailable":0}
-          for x in offers:
-            # verified=true is applied by the bundles API; its response may omit that boolean.
-            # If an explicit verification value is returned, reject anything non-verified.
-            verification=x.get("verification")
-            verified=x.get("verified")
-            if verified is False or (verification is not None and str(verification).strip().lower() not in ("verified","true","1")):
-              rejected["deverified_or_unverified"]+=1
-              print("REJECT DEVERIFIED/UNVERIFIED OFFER",x.get("id"),"| verified:",repr(verified),"| verification:",repr(verification),"| host:",x.get("host_id"),"| machine:",x.get("machine_id"))
-              continue
-            name=str(x.get("gpu_name") or "").upper()
-            if name not in ("RTX 3090","RTX 4090"): rejected["wrong_gpu"]+=1; continue
-            # Permanently reject provider hardware previously observed stuck in boot/SSL failure.
-            bad_hosts={"513108"}
-            bad_machines={"144733"}
-            host_id=str(x.get("host_id") or "")
-            machine_id=str(x.get("machine_id") or "")
-            if host_id in bad_hosts or machine_id in bad_machines:
-              rejected["previously_failed_hardware"] = rejected.get("previously_failed_hardware",0)+1
-              print("RED-FLAG PREVIOUSLY FAILED PROVIDER — reject offer",x.get("id"),"| host_id:",host_id,"| machine_id:",machine_id)
-              continue
-            geo=str(x.get("geolocation") or "").strip()
-            country=geo.rsplit(",",1)[-1].strip().upper() if "," in geo else ""
-            if country in {"CN","CHINA"}:
-              rejected["blocked_location"]+=1
-              print("RED-FLAG LOCATION — reject offer",x.get("id"),"| geo:",geo,"| machine_id:",x.get("machine_id"),"| host_id:",x.get("host_id"))
-              continue
-            ram=float(x.get("gpu_ram") or 0); frac=float(x.get("gpu_frac") or 0)
-            if ram<23000 or frac<0.99: rejected["not_full_gpu_or_low_vram"]+=1; continue
-            if x.get("rentable") is False or x.get("rented") is True: rejected["unavailable"]+=1; continue
-            price=float(x.get("dph_total") or 999999)
-            if price>cap: rejected["over_budget"]+=1; continue
-            down=float(x.get("inet_down") or 0)
-            if down<=1000: rejected["download_below_1000"]+=1; continue
-            rel=float(x.get("reliability2") or x.get("reliability") or 0)
-            if rel<0.95: rejected["unreliable"]+=1; continue
-            # Bandwidth is usage-billed in addition to GPU/storage. Prefer low, verified per-GB rates.
-            down_cost=x.get("inet_down_cost"); up_cost=x.get("inet_up_cost")
-            try: down_cost=float(down_cost); up_cost=float(up_cost)
-            except (TypeError,ValueError):
-              rejected["missing_or_invalid_bandwidth_cost"]+=1
-              print("REJECT UNKNOWN BANDWIDTH PRICE | ID",x.get("id"),"down/up raw",down_cost,up_cost)
-              continue
-            if down_cost<=0 or up_cost<=0:
-              rejected["missing_or_invalid_bandwidth_cost"]+=1
-              print("REJECT ZERO/NEGATIVE BANDWIDTH PRICE | ID",x.get("id"),"down/up $/GB",down_cost,up_cost)
-              continue
-            if down_cost>max_bw or up_cost>max_bw:
-              rejected["bandwidth_cost_over_cap"]+=1
-              print("REJECT HIGH BANDWIDTH COST | offer",x.get("id"),"| GPU",x.get("gpu_name"),"| down/up USD/GB",down_cost,up_cost,"| cap",max_bw,"| location",x.get("geolocation"),"| host",x.get("host_id"),"| machine",x.get("machine_id"))
-              continue
-            x["_neo_down_cost_gb"]=down_cost; x["_neo_up_cost_gb"]=up_cost; x["_neo_reliability"]=rel
-            eligible.append(x)
-          print("LIVE OFFERS RETURNED:",len(offers),"ELIGIBLE:",len(eligible))
-          print("REJECTION COUNTS:",json.dumps(rejected,sort_keys=True))
-          print("CANDIDATES — ID | GPU | VRAM MB | TOTAL $/h | DOWN Mbps | UP Mbps | DOWN $/GB | UP $/GB | RELIABILITY | LOCATION")
-          print("BANDWIDTH PRICE CAP: $",max_bw,"per GB in EACH direction; lower positive prices rank better.")
-          for x in sorted(eligible,key=lambda z:(z["_neo_reliability"],float(z.get("inet_down") or 0),-float(z.get("dph_total") or 999999)),reverse=True):
-            print("offer_id",x.get("id"),"| gpu",x.get("gpu_name"),"| VRAM_MB",x.get("gpu_ram"),"| total_per_hour",x.get("dph_total"),"| down_Mbps",x.get("inet_down"),"| up_Mbps",x.get("inet_up"),"| down_USD_GB",x.get("_neo_down_cost_gb"),"| up_USD_GB",x.get("_neo_up_cost_gb"),"| reliability",x.get("_neo_reliability"),"| location",x.get("geolocation"),"| machine_id",x.get("machine_id"),"| host_id",x.get("host_id"))
-          if not eligible: raise SystemExit("No RTX 3090/4090 full-GPU offer passed >1000 Mbps download, hourly price, reliability and low-bandwidth-cost limits. No rental made.")
-          # Rank lowest verified bandwidth cost first, then reliability and download speed. Low positive rates are preferred, not rejected.
-          eligible.sort(key=lambda x:(x["_neo_down_cost_gb"]+x["_neo_up_cost_gb"],-x["_neo_reliability"],-float(x.get("inet_down") or 0),-float(x.get("inet_up") or 0),float(x.get("dph_total") or 999999)))
-          selected=eligible[0]
-          # Strip local ranking helper fields before saving the provider offer.
-          selected.pop("_neo_down_cost_gb",None); selected.pop("_neo_up_cost_gb",None); selected.pop("_neo_reliability",None)
-          open("selected-offer.json","w").write(json.dumps(selected,indent=2))
-          print("SELECTED OFFER:",json.dumps({k:selected.get(k) for k in ("id","gpu_name","gpu_ram","dph_total","inet_down","inet_up","inet_down_cost","inet_up_cost","reliability2","geolocation","machine_id","host_id")},sort_keys=True))
-          with open(os.environ["GITHUB_OUTPUT"],"a") as f: f.write("offer_id="+str(selected["id"])+"\n")
+          import os
+          cap=float(os.environ["MAX_HOURLY_USD"])
+          bw=float(os.environ["MAX_BANDWIDTH_USD_PER_GB"])
+          assert 0 < cap <= 0.40, "GPU hourly cap must be >0 and <= $0.40"
+          assert 0 < bw <= 0.03, "Bandwidth cap must be >0 and <= $0.03/GB"
+          assert os.environ.get("VAST_API_KEY"), "Missing VAST_API_KEY secret"
+          assert len(os.environ.get("NEO_WORKER_TOKEN","")) >= 32, "Missing/short NEO_WORKER_SECRET (minimum 32 characters)"
+          assert os.environ.get("HF_TOKEN"), "Missing HF_TOKEN secret. Accept LTX-2.3 and Gemma model terms and add a read token as HF_TOKEN."
+          print("Secrets present; budget caps validated. Secret values are never printed.")
           PY
-      - name: Configure Vast CLI
-        run: vastai set api-key "$VAST_API_KEY"
-      - name: Rent clean CUDA terminal (no startup installer)
-        id: rent
+
+      - name: Install Vast CLI and deployment tools
+        run: |
+          python -m pip install --upgrade vastai requests
+          vastai set api-key "$VAST_API_KEY"
+
+      - name: Search live Vast offers and select eligible RTX GPU
+        id: offer
+        shell: bash
         run: |
           set -euo pipefail
-          echo "Creating a clean CUDA terminal only. No NEO setup or model downloads run during boot."
-          # Match the proven NEO app SSH bootstrap: create a keypair, rent, then
-          # attach the public key to the exact provider instance ID before ssh-url.
-          install -d -m 700 ~/.ssh
-          ssh-keygen -t ed25519 -N "" -f ~/.ssh/neo_vast_ed25519
-          vastai create instance "${{ steps.select.outputs.offer_id }}" --image "nvidia/cuda:12.4.1-devel-ubuntu22.04" --disk 200 --ssh --cancel-unavail --label "NEO-AUTO-${GITHUB_RUN_ID}" > /tmp/neo-vast-create.log 2>&1 || { cat /tmp/neo-vast-create.log; echo "Vast create failed; inspect account inventory."; exit 1; }
-          for i in $(seq 1 24); do
-            ID=$(vastai show instances --raw | python -c 'import json,sys; a=json.load(sys.stdin); a=a if isinstance(a,list) else a.get("instances",[]); z=[x for x in a if str(x.get("label"," ")).endswith("'"$GITHUB_RUN_ID"'")]; print(z[-1]["id"] if z else "")')
-            [ -n "$ID" ] && break
-            sleep 5
-          done
-          test -n "${ID:-}" || { echo "Instance ID unresolved; check Vast inventory for NEO-AUTO-${GITHUB_RUN_ID}"; exit 1; }
-          echo "$ID" > instance_id.txt
-          echo "instance_id=$ID" >> "$GITHUB_OUTPUT"
-          echo "Provider inventory confirms exact instance ID: $ID"
-          PUBKEY="$(cat ~/.ssh/neo_vast_ed25519.pub)"
-          ATTACHED=0
-          for attempt in $(seq 1 6); do
-            if vastai attach ssh "$ID" "$PUBKEY"; then ATTACHED=1; break; fi
-            echo "SSH key attach attempt $attempt/6 not ready; retrying"
-            sleep 5
-          done
-          [ "$ATTACHED" = "1" ] || { echo "Could not attach SSH public key to exact instance $ID"; exit 1; }
-          echo "SSH public key attached to exact instance $ID"
-          echo "RAW CUDA INSTANCE RENTED: $ID"
-      - name: Monitor boot and CUDA (12-minute hard limit)
-        run: |
-          set -euo pipefail
-          ID="${{ steps.rent.outputs.instance_id }}"
-          export INSTANCE_ID="$ID"
-          echo "Waiting for Vast actual_status=running and valid ssh_host/ssh_port; deadline 12 minutes."
-          for i in $(seq 1 36); do
-            echo "BOOT CHECK $i/36 — instance $ID — elapsed about $((i*20)) seconds"
-            INSTANCE_JSON=$(python - <<'PY'
+          python - <<'PY'
           import os,requests,json
-          r=requests.get(f"https://console.vast.ai/api/v0/instances/{os.environ['INSTANCE_ID']}/",headers={"Authorization":"Bearer "+os.environ["VAST_API_KEY"]},timeout=20)
+          key=os.environ["VAST_API_KEY"]
+          cap=float(os.environ["MAX_HOURLY_USD"])
+          bwcap=float(os.environ["MAX_BANDWIDTH_USD_PER_GB"])
+          q={
+            "limit":1000,
+            "rentable":{"eq":True},
+            "verified":{"eq":True},
+            "gpu_name":{"in":["RTX 3090","RTX 4090"]},
+            "num_gpus":{"eq":1},
+            "gpu_ram":{"gte":24000},
+            "inet_down":{"gte":1000},
+            "reliability2":{"gte":0.95},
+            "dph_total":{"lte":cap},
+            "order":[["dph_total","asc"]]
+          }
+          r=requests.post("https://console.vast.ai/api/v0/bundles/",
+             headers={"Authorization":"Bearer "+key,"Content-Type":"application/json"},
+             json=q,timeout=60)
+          r.raise_for_status()
+          payload=r.json()
+          offers=payload.get("offers",[]) if isinstance(payload,dict) else payload
+          print(f"Vast live marketplace returned {len(offers)} candidate records.")
+          accepted=[]
+          for x in offers:
+            name=str(x.get("gpu_name") or "").upper()
+            if name not in ("RTX 3090","RTX 4090"): continue
+            if x.get("verified") is False or x.get("rentable") is False or x.get("rented") is True: continue
+            if float(x.get("gpu_ram") or 0)<24000 or float(x.get("gpu_frac") or 0)<0.99: continue
+            if float(x.get("inet_down") or 0)<=1000: continue
+            if float(x.get("reliability2") or x.get("reliability") or 0)<0.95: continue
+            price=float(x.get("dph_total") or 999999)
+            if price>cap: continue
+            try:
+              down=float(x["inet_down_cost"]); up=float(x["inet_up_cost"])
+            except (KeyError,TypeError,ValueError):
+              print("REJECT",x.get("id"),"unknown upload/download per-GB price")
+              continue
+            if down<=0 or up<=0 or down>bwcap or up>bwcap: continue
+            accepted.append(x)
+          if not accepted:
+            raise SystemExit("No verified, rentable RTX 3090/4090 passed VRAM, speed, reliability, hourly and bandwidth caps. No rental was created.")
+          accepted.sort(key=lambda x:(
+            float(x["inet_down_cost"])+float(x["inet_up_cost"]),
+            -float(x.get("reliability2") or x.get("reliability") or 0),
+            -float(x.get("inet_down") or 0),
+            float(x.get("dph_total") or 999999)))
+          x=accepted[0]
+          print("SELECTED OFFER",
+            json.dumps({k:x.get(k) for k in ("id","gpu_name","gpu_ram","dph_total","inet_down","inet_up","inet_down_cost","inet_up_cost","reliability2","geolocation","host_id","machine_id")},sort_keys=True))
+          with open(os.environ["GITHUB_OUTPUT"],"a") as f:
+            f.write("offer_id="+str(x["id"])+"\n")
+            f.write("offer_gpu="+str(x.get("gpu_name") or "RTX") + "\n")
+            f.write("offer_price="+str(x.get("dph_total") or "")+"\n")
+          PY
+
+      - name: Prepare GPU-native app.py onstart agent
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s neo/worker/ltx_worker.py.gz.b64
+          test -s neo/worker/vast_ltx_onstart.sh.tpl
+          python - <<'PY'
+          from pathlib import Path
+          import os
+          template=Path("neo/worker/vast_ltx_onstart.sh.tpl").read_text()
+          worker=Path("neo/worker/ltx_worker.py.gz.b64").read_text().strip()
+          if "__WORKER_B64__" not in template: raise SystemExit("onstart template placeholder missing")
+          if not worker or any(c not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=\n" for c in worker):
+              raise SystemExit("worker payload is not valid base64")
+          script=template.replace("__WORKER_B64__",worker)
+          Path("/tmp/neo-ltx-onstart.sh").write_text(script)
+          Path("/tmp/neo-ltx-onstart.sh").chmod(0o700)
+          print("Built self-contained Vast onstart script from the exact worker embedded in the supplied app.py.")
+          print("Worker bootstrap installs LTX dependencies, downloads gated weights on the GPU, and exposes worker API on port 8190.")
+          PY
+
+      - name: Check live account inventory before rental
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os,requests,sys
+          h={"Authorization":"Bearer "+os.environ["VAST_API_KEY"]}
+          r=requests.get("https://console.vast.ai/api/v0/instances/",headers=h,timeout=30)
           r.raise_for_status()
           d=r.json()
-          x=d.get("instances",d)
-          if isinstance(x,list): x=next((z for z in x if str(z.get("id"))==os.environ["INSTANCE_ID"]),{})
-          print(json.dumps({k:x.get(k) for k in ("id","actual_status","status_msg","ssh_host","ssh_port","image_runtype")}))
+          rows=d.get("instances",d) if isinstance(d,dict) else d
+          active=[]
+          for x in rows if isinstance(rows,list) else []:
+            state=str(x.get("actual_status") or x.get("status") or "").lower()
+            if state not in ("exited","deleted","destroyed"):
+              active.append({k:x.get(k) for k in ("id","gpu_name","actual_status","status","label")})
+          if active:
+            print("Existing non-terminal Vast instances found. Refusing a duplicate rental:")
+            for x in active: print(x)
+            raise SystemExit("Resolve/reuse the existing instance before starting another NEO rental.")
+          print("Live Vast account inventory is clear; safe to create one new instance.")
           PY
-            )
-            echo "VAST INSTANCE: $INSTANCE_JSON"
-            HOST=$(python -c 'import json,sys; print(json.load(sys.stdin).get("ssh_host") or "")' <<<"$INSTANCE_JSON")
-            PORT=$(python -c 'import json,sys; print(json.load(sys.stdin).get("ssh_port") or "")' <<<"$INSTANCE_JSON")
-            STATE=$(python -c 'import json,sys; print(json.load(sys.stdin).get("actual_status") or "")' <<<"$INSTANCE_JSON")
-            if [ "$STATE" = "running" ] && [ -n "$HOST" ] && [[ "$PORT" =~ ^[0-9]+$ ]] && [ "$PORT" -gt 0 ]; then
-              echo "Vast reports running. Testing SSH endpoint $HOST:$PORT with attached Ed25519 key."
-              if ssh -i ~/.ssh/neo_vast_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 -p "$PORT" root@"$HOST" 'nvidia-smi'; then
-                echo "GPU BOOTED — SSH AND NVIDIA DRIVER VERIFIED"
-                printf '%s\n' "$HOST" > ssh_host.txt
-                printf '%s\n' "$PORT" > ssh_port.txt
-                exit 0
-              fi
-            fi
-            sleep 20
-          done
-          echo "BOOT FAILED: no verified SSH+nvidia-smi connection within 12 minutes. Instance $ID will be destroyed."
-          exit 1
-      - name: Install NEO only after terminal is alive
+
+      - name: Rent GPU with app.py agent bootstrap (no SSH)
+        id: rent
+        shell: bash
         run: |
           set -euo pipefail
-          ID="${{ steps.rent.outputs.instance_id }}"
-          HOST=$(cat ssh_host.txt)
-          PORT=$(cat ssh_port.txt)
-          echo "GPU passed SSH and nvidia-smi. Now installing OS tools and cloning NEO source."
-          ssh -i ~/.ssh/neo_vast_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y git python3 python3-pip python3-venv ffmpeg aria2 build-essential && mkdir -p /workspace && git clone --depth 1 --branch neo-reasoning-dev https://github.com/tinae2004/NEO-LTX-2.3.git /workspace/NEO-LTX-2.3 && python3 -m pip install --upgrade pip uv huggingface_hub pytest'
-          echo "NEO source cloned and base dependencies installed after successful GPU boot."
-      - name: Download LTX-2.3 checkpoint and spatial upscaler
+          LABEL="NEO-LTX23-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          export LABEL
+          python - <<'PY'
+          import os,subprocess,json,time,requests,re,sys
+          key=os.environ["VAST_API_KEY"]
+          def q(v):
+            import shlex
+            return shlex.quote(str(v))
+          env="-p 8190:8190 -e HF_TOKEN="+q(os.environ["HF_TOKEN"])+" -e NEO_WORKER_TOKEN="+q(os.environ["NEO_WORKER_TOKEN"])+" -e NEO_BUCKET="+q(os.environ.get("NEO_BUCKET","Tinae/neo-bucket"))
+          cmd=["vastai","create","instance",os.environ["OFFER_ID"],"--image","pytorch/pytorch:2.9.0-cuda13.0-cudnn9-devel","--disk","300","--env",env,"--onstart","/tmp/neo-ltx-onstart.sh","--label",os.environ["LABEL"],"--raw","--cancel-unavail"]
+          print("Creating one GPU using Vast --onstart. No SSH key, SSH port, or SSH bootstrap is requested.",flush=True)
+          p=subprocess.run(cmd,text=True,capture_output=True,timeout=180)
+          print("Vast create stdout:",p.stdout[-4000:],flush=True)
+          if p.stderr: print("Vast create stderr:",p.stderr[-4000:],flush=True)
+          if p.returncode: raise SystemExit("Vast create command failed; no instance is assumed.")
+          iid=None
+          try:
+            obj=json.loads(p.stdout.strip())
+            if isinstance(obj,dict):
+              iid=obj.get("new_contract") or obj.get("id") or (obj.get("instances") or [{}])[0].get("id")
+            elif isinstance(obj,list) and obj: iid=obj[0].get("id")
+          except Exception: pass
+          headers={"Authorization":"Bearer "+key}
+          for n in range(24):
+            if not iid:
+              try:
+                z=requests.get("https://console.vast.ai/api/v0/instances/",headers=headers,timeout=20)
+                z.raise_for_status()
+                payload=z.json(); rows=payload.get("instances",payload) if isinstance(payload,dict) else payload
+                matches=[x for x in rows if str(x.get("label") or "")==os.environ["LABEL"]]
+                if matches: iid=str(matches[-1]["id"])
+              except Exception as e: print("Inventory ID resolution retry:",type(e).__name__,str(e)[:180],flush=True)
+            if iid: break
+            print(f"Waiting for provider to assign the exact instance ID ({n+1}/24).",flush=True)
+            time.sleep(5)
+          if not iid: raise SystemExit("Vast accepted create but exact instance ID could not be reconciled by label; do not create another GPU.")
+          Path="instance_id.txt"
+          open(Path,"w").write(str(iid))
+          with open(os.environ["GITHUB_OUTPUT"],"a") as f: f.write("instance_id="+str(iid)+"\n")
+          print("VAST_INSTANCE_ID="+str(iid),flush=True)
+          PY
+        env:
+          OFFER_ID: ${{ steps.offer.outputs.offer_id }}
+
+      - name: Track Vast boot and LTX API every 5 seconds
+        id: monitor
+        shell: bash
         run: |
           set -euo pipefail
-          ID="${{ steps.rent.outputs.instance_id }}"; HOST=$(cat ssh_host.txt); PORT=$(cat ssh_port.txt)
-          echo "Downloading official LTX-2.3 distilled checkpoint and spatial upscaler on the GPU worker."
-          ssh -i ~/.ssh/neo_vast_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" "apt-get update && apt-get install -y ffmpeg && python -m pip install --upgrade huggingface_hub && mkdir -p /workspace/models/ltx23 && HF_TOKEN='$HF_TOKEN' python -c \"import os; from huggingface_hub import hf_hub_download; repo='Lightricks/LTX-2.3'; dest='/workspace/models/ltx23'; hf_hub_download(repo_id=repo, filename='ltx-2.3-22b-distilled-1.1.safetensors', local_dir=dest, token=os.environ['HF_TOKEN']); hf_hub_download(repo_id=repo, filename='ltx-2.3-spatial-upscaler-x2-1.1.safetensors', local_dir=dest, token=os.environ['HF_TOKEN'])\" && ls -lh /workspace/models/ltx23/*.safetensors"
-      - name: Install pinned workspace and run NEO-LTX tests
+          python - <<'PY'
+          import os,time,json,requests,sys
+          iid=os.environ["INSTANCE_ID"]
+          key=os.environ["VAST_API_KEY"]
+          headers={"Authorization":"Bearer "+key}
+          deadline=time.time()+150*60
+          last_phase=None
+          api_url=None
+          print(f"Monitoring exact Vast instance {iid}; polling provider and worker every 5 seconds.",flush=True)
+          while time.time()<deadline:
+            try:
+              r=requests.get(f"https://console.vast.ai/api/v0/instances/{iid}/",headers=headers,timeout=20)
+              r.raise_for_status()
+              payload=r.json()
+              detail=payload.get("instances",payload) if isinstance(payload,dict) else payload
+              if isinstance(detail,list): detail=next((x for x in detail if str(x.get("id"))==iid),{})
+              state=str(detail.get("actual_status") or detail.get("status") or "unknown").lower()
+              print(f"[{time.strftime('%H:%M:%S',time.gmtime())}Z] VAST instance={iid} state={state} status_msg={str(detail.get('status_msg') or '')[:160]}",flush=True)
+              if state in ("exited","destroyed","deleted","error"):
+                raise SystemExit(f"Vast instance entered terminal state {state}; instance is preserved for inspection.")
+              ports=detail.get("ports") or {}
+              external=None
+              if isinstance(ports,dict):
+                for k,v in ports.items():
+                  if str(k).split("/")[0].strip()!="8190": continue
+                  for row in (v if isinstance(v,list) else [v]):
+                    if isinstance(row,dict):
+                      p=row.get("HostPort",row.get("host_port",row.get("public_port",row.get("external_port"))))
+                      if p and str(p).isdigit(): external=int(p); break
+                  if external: break
+              host=str(detail.get("public_ipaddr") or detail.get("public_ip") or detail.get("public_ip_address") or detail.get("ip_address") or "").strip().strip("[]")
+              if external and host and host not in ("0.0.0.0","127.0.0.1","localhost"):
+                api_host=f"[{host}]" if ":" in host and not host.startswith("[") else host
+                api_url=f"http://{api_host}:{external}"
+                try:
+                  h=requests.get(api_url+"/health",timeout=8)
+                  h.raise_for_status()
+                  health=h.json()
+                  phase=str(health.get("phase") or "unknown")
+                  if phase!=last_phase:
+                    print(f"WORKER API ONLINE: {api_url} phase={phase} ready={health.get('ready')}",flush=True)
+                    last_phase=phase
+                  else:
+                    print(f"WORKER PHASE: {phase}; ready={health.get('ready')}",flush=True)
+                  if health.get("ready") is True and health.get("ok") is True:
+                    print("NEO_LTX_WORKER_READY — unauthenticated health endpoint confirms LTX-2.3 model and CLI checks passed.",flush=True)
+                    with open(os.environ["GITHUB_OUTPUT"],"a") as f:
+                      f.write("api_url="+api_url+"\n")
+                    open("worker-health.json","w").write(json.dumps(health,indent=2))
+                    sys.exit(0)
+                  if health.get("error"): print("BOOTSTRAP ERROR:",str(health["error"])[:500],flush=True)
+                except Exception as e:
+                  print("Worker API not reachable yet:",type(e).__name__,str(e)[:200],flush=True)
+              else:
+                print("Vast has not published the mapped 8190/tcp port yet.",flush=True)
+            except requests.RequestException as e:
+              print("Provider status request failed; retrying same instance:",type(e).__name__,str(e)[:200],flush=True)
+            time.sleep(5)
+          raise SystemExit("Timed out waiting for the same Vast instance and LTX worker readiness. GPU is not auto-destroyed; inspect logs and inventory.")
+          PY
+        env:
+          INSTANCE_ID: ${{ steps.rent.outputs.instance_id }}
+
+      - name: Verify authenticated diagnostics API
+        if: success()
+        shell: bash
+        env:
+          API_URL: ${{ steps.monitor.outputs.api_url }}
+          INSTANCE_ID: ${{ steps.rent.outputs.instance_id }}
         run: |
           set -euo pipefail
-          ID="${{ steps.rent.outputs.instance_id }}"; HOST=$(cat ssh_host.txt); PORT=$(cat ssh_port.txt)
-          ssh -i ~/.ssh/neo_vast_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'python -m pip install --upgrade uv pytest huggingface_hub && cd /workspace/NEO-LTX-2.3 && uv sync'
-          echo "Running Shona, LTX sampler callback, checkpoint, and preview tests."
-          ssh -i ~/.ssh/neo_vast_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'cd /workspace/NEO-LTX-2.3 && uv run --no-sync pytest -q neo/speech/test_dialogue.py packages/ltx-pipelines/tests/ltx_pipelines/test_sampler_callbacks.py packages/ltx-pipelines/tests/ltx_pipelines/test_previews.py'
-      - name: Download Gemma 3 text encoder
+          python - <<'PY'
+          import os,time,hmac,hashlib,requests,json
+          token=os.environ["NEO_WORKER_TOKEN"]
+          stamp=str(int(time.time()))
+          path="/diagnostics"
+          msg=stamp+"\nGET\n"+path+"\n"+hashlib.sha256(b"").hexdigest()
+          sig=hmac.new(token.encode(),msg.encode(),hashlib.sha256).hexdigest()
+          r=requests.get(os.environ["API_URL"]+path,headers={"X-NEO-Time":stamp,"X-NEO-Signature":sig},timeout=20)
+          r.raise_for_status()
+          data=r.json()
+          assert isinstance(data.get("bootstrap"),dict), "Worker diagnostics did not return bootstrap state"
+          open("worker-diagnostics.json","w").write(json.dumps(data,indent=2))
+          print("Authenticated worker diagnostics passed for instance",os.environ["INSTANCE_ID"])
+          print("Bootstrap state:",json.dumps(data["bootstrap"],sort_keys=True))
+          print("Startup log tail:\n",data.get("startup_log_tail","")[-5000:])
+          print("Worker log tail:\n",data.get("worker_log_tail","")[-5000:])
+          PY
+
+      - name: Write deployment summary
+        if: always()
+        shell: bash
+        env:
+          INSTANCE_ID: ${{ steps.rent.outputs.instance_id }}
+          API_URL: ${{ steps.monitor.outputs.api_url }}
+          OFFER_ID: ${{ steps.offer.outputs.offer_id }}
+          GPU_NAME: ${{ steps.offer.outputs.offer_gpu }}
+          GPU_PRICE: ${{ steps.offer.outputs.offer_price }}
         run: |
-          set -euo pipefail
-          ID="${{ steps.rent.outputs.instance_id }}"; HOST=$(cat ssh_host.txt); PORT=$(cat ssh_port.txt)
-          echo "Downloading gated Gemma 3 encoder. HF_TOKEN is used only on the rented worker and is not written to the repository."
-          ssh -i ~/.ssh/neo_vast_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" "HF_TOKEN='$HF_TOKEN' python -c \"import os; from huggingface_hub import snapshot_download; snapshot_download(repo_id='google/gemma-3-12b-it-qat-q4_0-unquantized', local_dir='/workspace/models/gemma3', token=os.environ['HF_TOKEN'])\""
-      - name: Run actual LTX-2.3 text-to-video inference
-        run: |
-          set -euo pipefail
-          ID="${{ steps.rent.outputs.instance_id }}"; HOST=$(cat ssh_host.txt); PORT=$(cat ssh_port.txt)
-          echo "Running a real 9-frame 512x512 audio/video generation with FP8 cast and CPU offload."
-          ssh -i ~/.ssh/neo_vast_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'cd /workspace/NEO-LTX-2.3 && mkdir -p /workspace/neo-state/test-output && uv run --no-sync python -m ltx_pipelines.distilled --distilled-checkpoint-path /workspace/models/ltx23/ltx-2.3-22b-distilled-1.1.safetensors --gemma-root /workspace/models/gemma3 --spatial-upsampler-path /workspace/models/ltx23/ltx-2.3-spatial-upscaler-x2-1.1.safetensors --quantization fp8-cast --offload cpu --prompt "A cinematic test shot of a small red car driving slowly along a quiet country road at sunrise, stable camera, realistic lighting." --seed 42 --num-frames 9 --height 512 --width 512 --output-path /workspace/neo-state/test-output/neo-ltx23-smoke.mp4'
-          ssh -i ~/.ssh/neo_vast_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@"$HOST" 'test -s /workspace/neo-state/test-output/neo-ltx23-smoke.mp4 && ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 /workspace/neo-state/test-output/neo-ltx23-smoke.mp4'
-          echo "PASS: a real LTX-2.3 MP4 was generated and ffprobe validated it."
-          mkdir -p test-artifacts
-          scp -i ~/.ssh/neo_vast_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P "$PORT" root@"$HOST":/workspace/neo-state/test-output/neo-ltx23-smoke.mp4 test-artifacts/neo-ltx23-smoke.mp4
-      - name: Upload deployment record
+          {
+            echo "## NEO LTX-2.3 GPU deployment"
+            echo
+            echo "- Offer: $OFFER_ID ($GPU_NAME)"
+            echo "- Hourly provider price: $GPU_PRICE USD/h"
+            echo "- Vast instance: ${INSTANCE_ID:-not resolved}"
+            echo "- Worker API: ${API_URL:-not reachable}"
+            echo "- Poll interval: 5 seconds"
+            echo "- Deployment method: Vast --onstart + port 8190; no SSH"
+            echo "- GPU cleanup: failed deployments are preserved for diagnosis"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload deployment diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: neo-gpu-deployment
+          name: neo-ltx-deploy-${{ github.run_id }}
           path: |
-            selected-offer.json
             instance_id.txt
-            test-artifacts/neo-ltx23-smoke.mp4
+            worker-health.json
+            worker-diagnostics.json
           if-no-files-found: ignore
-          retention-days: 30
-      - name: Destroy if keep is disabled
-        if: always() && steps.rent.outputs.instance_id != '' && (inputs.keep_gpu != true || job.status != 'success')
-        run: vastai destroy instance "${{ steps.rent.outputs.instance_id }}" -y --raw
+          retention-days: 14
+
+      - name: Destroy GPU only when explicitly requested after success
+        if: success() && inputs.keep_gpu == false
+        shell: bash
+        run: |
+          set -euo pipefail
+          ID="${{ steps.rent.outputs.instance_id }}"
+          echo "Explicit keep_gpu=false; destroying verified instance $ID."
+          vastai destroy instance "$ID" -y
