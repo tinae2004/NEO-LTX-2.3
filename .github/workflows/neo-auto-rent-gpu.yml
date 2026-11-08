@@ -241,7 +241,7 @@ jobs:
           def signed(method,path,obj=None):
             raw=b"" if obj is None else json.dumps(obj,separators=(",",":")).encode()
             stamp=str(int(time.time())); nonce=secrets.token_hex(16)
-            msg=stamp+"\\n"+nonce+"\\n"+method+"\\n"+path+"\\n"+hashlib.sha256(raw).hexdigest()
+            msg=stamp+"\n"+nonce+"\n"+method+"\n"+path+"\n"+hashlib.sha256(raw).hexdigest()
             sig=hmac.new(token.encode(),msg.encode(),hashlib.sha256).hexdigest()
             headers={"X-NEO-Time":stamp,"X-NEO-Nonce":nonce,"X-NEO-Signature":sig}
             if obj is not None: headers["Content-Type"]="application/json"
@@ -277,7 +277,7 @@ jobs:
           print("REMOTE_GPU_EXEC_RESULT",json.dumps(result,indent=2),flush=True)
           if result.get("exit_code")!=0 or "NEO_GPU_EXEC_OK" not in result.get("stdout",""):
             raise SystemExit("Control API connected but remote nvidia-smi verification failed.")
-          with open(os.environ["GITHUB_OUTPUT"],"a") as f: f.write("connected=true\\n")
+          with open(os.environ["GITHUB_OUTPUT"],"a") as f: f.write("connected=true\n")
           print("GITHUB_CONNECTED_TO_GPU: authenticated remote execution verified on Vast instance",iid,flush=True)
           PY
 
