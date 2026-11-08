@@ -162,6 +162,10 @@ jobs:
           rows=d.get("instances",d) if isinstance(d,dict) else d
           active=[]
           for x in rows if isinstance(rows,list) else []:
+            label=str(x.get("label") or "")
+            # Only reconcile NEO-owned instances; unrelated Vast rentals do not block NEO.
+            if not label.upper().startswith("NEO"):
+              continue
             state=str(x.get("actual_status") or x.get("status") or "").lower()
             if state not in ("exited","deleted","destroyed"):
               active.append({k:x.get(k) for k in ("id","gpu_name","actual_status","status","label")})
