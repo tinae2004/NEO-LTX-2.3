@@ -133,20 +133,22 @@ jobs:
         run: |
           set -euo pipefail
           test -s neo/worker/ltx_worker.py.gz.b64
+          test -s neo/worker/gpu_control_api.py.gz.b64
           test -s neo/worker/vast_ltx_onstart.sh.tpl
           python - <<'PY'
           from pathlib import Path
           import os
           template=Path("neo/worker/vast_ltx_onstart.sh.tpl").read_text()
           worker=Path("neo/worker/ltx_worker.py.gz.b64").read_text().strip()
-          if "__WORKER_B64__" not in template: raise SystemExit("onstart template placeholder missing")
+          control=Path("neo/worker/gpu_control_api.py.gz.b64").read_text().strip()
+          if "__WORKER_B64__" not in template or "__CONTROL_B64__" not in template: raise SystemExit("onstart template placeholder missing")
           if not worker or any(c not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=\n" for c in worker):
               raise SystemExit("worker payload is not valid base64")
-          script=template.replace("__WORKER_B64__",worker)
+          script=template.replace("__WORKER_B64__",worker).replace("__CONTROL_B64__",control)
           Path("/tmp/neo-ltx-onstart.sh").write_text(script)
           Path("/tmp/neo-ltx-onstart.sh").chmod(0o700)
           print("Built self-contained Vast onstart script from the exact worker embedded in the supplied app.py.")
-          print("Worker bootstrap installs LTX dependencies, downloads gated weights on the GPU, and exposes worker API on port 8190.")
+          print("GPU bootstrap starts the original NEO control agent on 8191 and LTX worker on 8190; GitHub will authenticate, bind the exact Vast ID, and run nvidia-smi.")
           PY
 
       - name: Check live account inventory before rental
@@ -189,7 +191,7 @@ jobs:
           def q(v):
             import shlex
             return shlex.quote(str(v))
-          env="-p 8190:8190 -e HF_TOKEN="+q(os.environ["HF_TOKEN"])+" -e NEO_WORKER_TOKEN="+q(os.environ["NEO_WORKER_TOKEN"])+" -e NEO_BUCKET="+q(os.environ.get("NEO_BUCKET","Tinae/neo-bucket"))
+          env="-p 8190:8190 -p 8191:8191 -e NEO_GPU_CONTROL_TOKEN="+q(os.environ["NEO_WORKER_TOKEN"])+" -e HF_TOKEN="+q(os.environ["HF_TOKEN"])+" -e NEO_WORKER_TOKEN="+q(os.environ["NEO_WORKER_TOKEN"])+" -e NEO_BUCKET="+q(os.environ.get("NEO_BUCKET","Tinae/neo-bucket"))
           cmd=["vastai","create","instance",os.environ["OFFER_ID"],"--image","pytorch/pytorch:2.9.0-cuda13.0-cudnn9-devel","--disk","300","--env",env,"--onstart","/tmp/neo-ltx-onstart.sh","--label",os.environ["LABEL"],"--raw","--cancel-unavail"]
           print("Creating one GPU using Vast --onstart. No SSH key, SSH port, or SSH bootstrap is requested.",flush=True)
           p=subprocess.run(cmd,text=True,capture_output=True,timeout=180)
@@ -224,6 +226,60 @@ jobs:
           PY
         env:
           OFFER_ID: ${{ steps.offer.outputs.offer_id }}
+
+      - name: Connect GitHub to the live NEO GPU control agent
+        id: control
+        shell: bash
+        env:
+          INSTANCE_ID: ${{ steps.rent.outputs.instance_id }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os,time,json,hmac,hashlib,secrets,requests
+          iid=os.environ["INSTANCE_ID"]; key=os.environ["VAST_API_KEY"]; token=os.environ["NEO_WORKER_TOKEN"]
+          auth={"Authorization":"Bearer "+key}; deadline=time.time()+30*60; base=None
+          def signed(method,path,obj=None):
+            raw=b"" if obj is None else json.dumps(obj,separators=(",",":")).encode()
+            stamp=str(int(time.time())); nonce=secrets.token_hex(16)
+            msg=stamp+"\\n"+nonce+"\\n"+method+"\\n"+path+"\\n"+hashlib.sha256(raw).hexdigest()
+            sig=hmac.new(token.encode(),msg.encode(),hashlib.sha256).hexdigest()
+            headers={"X-NEO-Time":stamp,"X-NEO-Nonce":nonce,"X-NEO-Signature":sig}
+            if obj is not None: headers["Content-Type"]="application/json"
+            return requests.request(method,"http://"+base+path,headers=headers,data=raw if obj is not None else None,timeout=25)
+          print("Connecting to NEO GPU control API on the exact rented Vast instance",iid,flush=True)
+          while time.time()<deadline:
+            r=requests.get(f"https://console.vast.ai/api/v0/instances/{iid}/",headers=auth,timeout=20); r.raise_for_status()
+            d=r.json(); d=d.get("instances",d) if isinstance(d,dict) else d
+            if isinstance(d,list): d=next((x for x in d if str(x.get("id"))==iid),{})
+            ports=d.get("ports") or {}; ext=None
+            for k,v in ports.items() if isinstance(ports,dict) else []:
+              if str(k).split("/")[0]!="8191": continue
+              for row in (v if isinstance(v,list) else [v]):
+                if isinstance(row,dict):
+                  p=row.get("HostPort",row.get("host_port",row.get("public_port",row.get("external_port"))))
+                  if p and str(p).isdigit(): ext=int(p); break
+            host=str(d.get("public_ipaddr") or d.get("public_ip") or d.get("public_ip_address") or "").strip().strip("[]")
+            if ext and host:
+              base=(f"[{host}]:{ext}" if ":" in host else f"{host}:{ext}")
+              try:
+                h=requests.get("http://"+base+"/health",timeout=8); h.raise_for_status(); health=h.json()
+                if health.get("service")=="neo-gpu-control":
+                  print("NEO_GPU_CONTROL_API_ONLINE",json.dumps(health),flush=True); break
+              except Exception as e: print("Control API starting:",type(e).__name__,str(e)[:160],flush=True)
+            print("Waiting for mapped port 8191 and control agent...",flush=True); time.sleep(5)
+          else: raise SystemExit("GPU control API did not become reachable; same GPU is preserved.")
+          bind=signed("POST","/bind",{"instance_id":iid}); bind.raise_for_status()
+          print("INSTANCE_ID_BOUND",bind.json(),flush=True)
+          sys=signed("GET","/system"); sys.raise_for_status(); system=sys.json()
+          print("GPU SYSTEM SNAPSHOT",json.dumps(system,indent=2),flush=True)
+          probe=signed("POST","/exec",{"command":"nvidia-smi && echo NEO_GPU_EXEC_OK && df -h /workspace && python --version","timeout":45})
+          probe.raise_for_status(); result=probe.json()
+          print("REMOTE_GPU_EXEC_RESULT",json.dumps(result,indent=2),flush=True)
+          if result.get("exit_code")!=0 or "NEO_GPU_EXEC_OK" not in result.get("stdout",""):
+            raise SystemExit("Control API connected but remote nvidia-smi verification failed.")
+          with open(os.environ["GITHUB_OUTPUT"],"a") as f: f.write("connected=true\\n")
+          print("GITHUB_CONNECTED_TO_GPU: authenticated remote execution verified on Vast instance",iid,flush=True)
+          PY
 
       - name: Track Vast boot and LTX API every 5 seconds
         id: monitor
