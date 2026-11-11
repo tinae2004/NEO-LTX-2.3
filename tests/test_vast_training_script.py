@@ -18,13 +18,15 @@ def test_remote_training_script_bootstraps_python_and_cuda_torch():
     assert "python3-pip" in script
     assert "python3-venv" in script
     assert "python-is-python3" in script
-    assert "python3 -m venv /workspace/neo/.venv" in script
+    assert "python3 -m venv --system-site-packages /workspace/neo/.venv" in script
     assert "source /workspace/neo/.venv/bin/activate" in script
-    assert script.index("python3 -m venv") < script.index("python -m pip install --upgrade pip")
-    assert "download.pytorch.org/whl/cu128" in script
     assert "torch.cuda.is_available()" in script
-    assert script.index("apt-get install") < script.index("python -c")
-    # The remaining heredoc is intentional: it validates metrics after training.
+    assert "torch.cuda.get_device_name(0)" in script
+    assert "pip install --index-url https://download.pytorch.org" not in script
+    assert "apt-get install" not in script
+    assert "Blender" not in script
+    assert "datasets/combined_v1/train.npz" in script
+    # The prepared dataset must exist before the rented GPU is used for training.
     assert script.index("python - <<'PY'") > script.index("training/train_translator.py")
 
 
