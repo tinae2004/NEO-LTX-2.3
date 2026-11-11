@@ -1,2 +1,3 @@
 One-time authorized launch of NEO FastFrame Vast GPU training with the previously approved $5 total budget, $0.30/hour cap, 0.3-hour maximum rental, and RTX 3090 then RTX 4090 preference. This trigger is gated by the exact commit message.
 Launch request refreshed for DeepSeek Flash integration.
+Retry after isolated virtualenv bootstrap fix (commit 7c0533190587cb17629846aca309ce1418f0a88f).
