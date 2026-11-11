@@ -74,6 +74,28 @@ jobs:
       - name: Export animated scene-state and evaluated geometry (CI capture mode)
         run: |
           env -u LD_LIBRARY_PATH blender --background /tmp/neo_demo_scene.blend --python scripts/blender_capture.py -- --output /tmp/neo_capture/head_turn --start 1 --end 9 --profile FULL --skip-render
+      - name: Preflight Blender camera metadata
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          capture = Path("/tmp/neo_capture/head_turn")
+          manifest = json.loads((capture / "manifest.json").read_text())
+          for record in manifest["frames"]:
+              state = json.loads((capture / record["state_file"]).read_text())
+              cameras = [obj for obj in state["objects"] if obj["type"] == "CAMERA" and obj["name"] == state["camera"]]
+              assert len(cameras) == 1, "Expected exactly one active camera record"
+              camera = cameras[0].get("camera")
+              assert camera, "Camera metadata was not exported"
+              for field in ("lens_mm", "sensor_width_mm", "sensor_height_mm", "view_frame"):
+                  assert field in camera, f"Missing camera field: {field}"
+              bounds = camera["view_frame"]
+              assert bounds["mode"] in ("perspective_slopes", "orthographic_plane")
+              assert bounds["right"] > bounds["left"]
+              assert bounds["top"] > bounds["bottom"]
+          print("Blender camera metadata preflight passed")
+          PY
       - name: Convert Blender capture to labelled training pairs
         run: |
           pip install .

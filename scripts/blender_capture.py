@@ -213,9 +213,31 @@ def capture_object(obj, geometry_dir: Path, frame_stem: str) -> dict[str, Any]:
             "focus_distance": float(cam.dof.focus_distance),
             "f_stop": float(cam.dof.aperture_fstop),
         }
-        # Projection-matrix calculation is useful for later dense reprojection,
-        # but it is not required by the current skeleton-pair converter. Keep
-        # camera intrinsics even if a Blender build cannot calculate this matrix.
+        # Camera.view_frame accounts for sensor fit, aspect ratio and lens shift.
+        # Store an exact view rectangle in camera-local coordinates.
+        try:
+            frame = cam.view_frame(scene=bpy.context.scene)
+            if cam.type == "PERSP":
+                frame_x = [float(point.x / -point.z) for point in frame]
+                frame_y = [float(point.y / -point.z) for point in frame]
+                frame_mode = "perspective_slopes"
+            elif cam.type == "ORTHO":
+                frame_x = [float(point.x) for point in frame]
+                frame_y = [float(point.y) for point in frame]
+                frame_mode = "orthographic_plane"
+            else:
+                frame_x, frame_y, frame_mode = [], [], "unsupported"
+            if frame_x and frame_y:
+                camera_data["view_frame"] = {
+                    "mode": frame_mode,
+                    "left": min(frame_x),
+                    "right": max(frame_x),
+                    "bottom": min(frame_y),
+                    "top": max(frame_y),
+                }
+        except Exception as exc:
+            camera_data["view_frame_error"] = f"{type(exc).__name__}: {exc}"
+        # Preserve a full projection matrix when Blender provides it.
         try:
             camera_data["projection_matrix"] = matrix_rows(cam.calc_matrix_camera(
                 bpy.context.evaluated_depsgraph_get(),
