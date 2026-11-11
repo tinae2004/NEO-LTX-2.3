@@ -88,14 +88,6 @@ cd /workspace/neo
 mkdir -p artifacts datasets logs data/captures
 echo '=== GPU preflight ==='
 nvidia-smi
-python - <<'PY'
-import torch
-assert torch.cuda.is_available(), 'CUDA is unavailable inside the Vast worker'
-print('PyTorch:',torch.__version__)
-print('CUDA:',torch.version.cuda)
-print('GPU:',torch.cuda.get_device_name(0))
-print('VRAM_GB:',round(torch.cuda.get_device_properties(0).total_memory/1024**3,2))
-PY
 echo '=== Install Blender and project dependencies ==='
 apt-get update
 apt-get install -y --no-install-recommends curl xz-utils ca-certificates python3 python3-pip python-is-python3 libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libgbm1 libsm6 libxext6 libxrender1 libxfixes3 libxi6 libxkbcommon0 libdbus-1-3 libfontconfig1
