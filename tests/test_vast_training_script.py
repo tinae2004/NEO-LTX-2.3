@@ -35,3 +35,77 @@ def test_deepseek_agent_redacts_api_tokens():
     assert "abcdef123456" not in value
     assert "sk-abcdefghijklmnop" not in value
     assert "[REDACTED]" in value
+
+
+def test_rent_with_refresh_researches_after_stale_vast_offer():
+    from scripts.run_vast_gpu_training import rent_with_refresh
+
+    class FakeAPI:
+        def __init__(self):
+            self.search_calls = 0
+            self.create_calls = []
+
+        def search(self, gpu_names):
+            self.search_calls += 1
+            if self.search_calls == 1:
+                return [{
+                    "id": 101, "gpu_name": "RTX 3090", "dph_total": 0.18,
+                    "reliability": 0.995,
+                }]
+            return [{
+                "id": 202, "gpu_name": "RTX 3090", "dph_total": 0.19,
+                "reliability": 0.996,
+            }]
+
+        def create(self, offer_id, disk_gb, label):
+            self.create_calls.append(offer_id)
+            if offer_id == 101:
+                raise RuntimeError('Vast API PUT failed (400): "no_such_ask"')
+            return {"new_contract": 9876}
+
+    api = FakeAPI()
+    instance_id, selected = rent_with_refresh(
+        api, ["RTX 3090", "RTX 4090"], "RTX 3090,RTX 4090",
+        max_hourly=0.30, budget=5.0, max_hours=0.3,
+        disk_gb=100, label="test", max_searches=3, offers_per_search=5,
+    )
+
+    assert instance_id == 9876
+    assert selected["id"] == 202
+    assert api.search_calls == 2
+    assert api.create_calls == [101, 202]
+
+
+def test_rent_with_refresh_never_retries_excluded_stale_offer():
+    from scripts.run_vast_gpu_training import rent_with_refresh
+
+    class FakeAPI:
+        def __init__(self):
+            self.search_calls = 0
+            self.create_calls = []
+
+        def search(self, gpu_names):
+            self.search_calls += 1
+            return [{
+                "id": 303, "gpu_name": "RTX 3090", "dph_total": 0.18,
+                "reliability": 0.995,
+            }]
+
+        def create(self, offer_id, disk_gb, label):
+            self.create_calls.append(offer_id)
+            raise RuntimeError("no_such_ask")
+
+    api = FakeAPI()
+    try:
+        rent_with_refresh(
+            api, ["RTX 3090", "RTX 4090"], "RTX 3090,RTX 4090",
+            max_hourly=0.30, budget=5.0, max_hours=0.3,
+            disk_gb=100, label="test", max_searches=3, offers_per_search=5,
+        )
+    except RuntimeError as exc:
+        assert "fresh searches" in str(exc)
+    else:
+        raise AssertionError("Expected bounded rental failure")
+
+    assert api.search_calls == 3
+    assert api.create_calls == [303]
