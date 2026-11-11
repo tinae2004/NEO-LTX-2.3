@@ -203,7 +203,14 @@ def main():
     create_environment()
     scene = bpy.context.scene
     engines = bpy.types.RenderSettings.bl_rna.properties["engine"].enum_items.keys()
-    scene.render.engine = "BLENDER_EEVEE_NEXT" if "BLENDER_EEVEE_NEXT" in engines else "BLENDER_EEVEE"
+    if args.renderer == "CYCLES":
+        if "CYCLES" not in engines:
+            raise RuntimeError("Cycles renderer is not available in this Blender build")
+        scene.render.engine = "CYCLES"
+        scene.cycles.device = "CPU"
+        scene.cycles.samples = 12
+    else:
+        scene.render.engine = "BLENDER_EEVEE_NEXT" if "BLENDER_EEVEE_NEXT" in engines else "BLENDER_EEVEE"
     scene.render.resolution_x = 512
     scene.render.resolution_y = 512
     scene.render.resolution_percentage = 100

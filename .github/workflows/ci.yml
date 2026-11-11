@@ -49,14 +49,14 @@ jobs:
       - name: Install Blender
         run: |
           sudo apt-get update
-          sudo apt-get install -y blender
+          sudo apt-get install -y blender libegl1 libegl-mesa0 libgl1-mesa-dri libgbm1 libxrender1 libxi6 libxkbcommon0
           blender --version
       - name: Install Python dataset dependencies
         run: |
           python -m pip install --upgrade pip
           pip install numpy
       - name: Create procedural NEO demo scene
-        run: blender --background --python scripts/create_blender_demo_scene.py -- --output /tmp/neo_demo_scene.blend
+        run: blender --background --python scripts/create_blender_demo_scene.py -- --output /tmp/neo_demo_scene.blend --renderer CYCLES
       - name: Capture nine animated frames with FULL profile
         run: |
           blender --background /tmp/neo_demo_scene.blend --python scripts/blender_capture.py -- --output /tmp/neo_capture/head_turn --start 1 --end 9 --profile FULL
