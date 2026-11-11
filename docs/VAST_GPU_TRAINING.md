@@ -6,6 +6,8 @@ This is a manually triggered, budget-capped first GPU training run. It searches 
 
 Add a Vast.ai API key as the GitHub Actions repository secret named VAST_API_KEY. The key stays on the GitHub Actions runner and is never copied to the rented machine.
 
+Optionally add DEEPSEEK_API_KEY as a second GitHub Actions repository secret. When a GPU provisioning or remote training step fails, the DeepSeek advisor receives a redacted error summary and relevant runtime limits, then prints a diagnosis and suggested fix into the workflow logs. It is advisory only: it cannot run shell commands, change budget limits, rent GPUs, or destroy instances. If the secret is absent or the API is unavailable, the original workflow error remains authoritative and the run continues to fail normally.
+
 ## Run
 
 Open Actions, select NEO FastFrame - Vast GPU Training, and choose Run workflow. Enter the total USD budget, maximum hourly price and maximum rental duration. The workflow refuses to rent if no eligible RTX offer fits those limits.
