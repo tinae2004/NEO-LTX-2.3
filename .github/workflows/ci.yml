@@ -100,6 +100,33 @@ jobs:
         run: |
           pip install .
           python scripts/build_dataset_from_blender.py --capture /tmp/neo_capture/head_turn --output /tmp/neo_blender_dataset --action-id 0
+      - name: Build dense surface-flow and occlusion labels from evaluated meshes
+        run: |
+          python scripts/build_dense_flow_pairs.py --capture /tmp/neo_capture/head_turn --output /tmp/neo_dense_flow --size 64
+      - name: Verify dense surface-flow fields
+        run: |
+          python - <<'PY'
+          import json
+          import numpy as np
+          from pathlib import Path
+          root = Path("/tmp/neo_dense_flow")
+          metadata = json.loads((root / "dense_flow_metadata.json").read_text())
+          with np.load(root / "dense_flow_pairs.npz") as data:
+              assert data["flow_forward"].shape == (8, 2, 64, 64)
+              assert data["source_visibility"].shape == (8, 1, 64, 64)
+              assert data["target_visible_from_source"].shape == (8, 1, 64, 64)
+              assert data["target_coverage"].shape == (8, 1, 64, 64)
+              assert data["depth_delta"].shape == (8, 1, 64, 64)
+              assert np.isfinite(data["flow_forward"]).all()
+              assert np.isfinite(data["depth_delta"]).all()
+              assert np.all(data["source_visibility"].sum(axis=(1, 2, 3)) > 0)
+              assert np.all(data["target_coverage"].sum(axis=(1, 2, 3)) > 0)
+              print("Dense flow pairs:", len(data["frame_indices"]))
+              print("Mean source coverage:", float(data["source_visibility"].mean()))
+              print("Mean target visibility:", float(data["target_visible_from_source"].mean()))
+          assert metadata["pair_count"] == 8
+          print("Dense geometry-flow/occlusion smoke test passed")
+          PY
       - name: Verify Blender geometry, scene-state and dataset arrays
         run: |
           python - <<'PY'
@@ -149,5 +176,7 @@ jobs:
             /tmp/neo_capture/head_turn/manifest.json
             /tmp/neo_blender_translator.pt
             /tmp/neo_blender_translator.metrics.json
+            /tmp/neo_dense_flow/dense_flow_pairs.npz
+            /tmp/neo_dense_flow/dense_flow_metadata.json
           if-no-files-found: error
           retention-days: 14
