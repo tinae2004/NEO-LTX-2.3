@@ -7,7 +7,7 @@ name = "neo-video-gen"
 version = "0.1.0"
 description = "NEO 3D-to-2D motion translation research platform"
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.26", "Pillow>=10.0"]
+dependencies = ["numpy>=1.26", "Pillow>=10.0", "requests>=2.31"]
 
 [project.optional-dependencies]
 app = ["gradio>=5.0,<6"]
