@@ -70,6 +70,7 @@ jobs:
       - name: Provision Vast GPU and train NEO
         env:
           VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           NEO_BUDGET_USD: ${{ inputs.budget_usd || '5' }}
           NEO_MAX_HOURLY_USD: ${{ inputs.max_hourly_usd || '0.30' }}
           NEO_MAX_HOURS: ${{ inputs.max_hours || '0.3' }}
