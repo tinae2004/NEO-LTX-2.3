@@ -14,7 +14,9 @@ Capture it:
 
     blender --background ./demo_scene.blend --python scripts/blender_capture.py -- --output ./neo_data/scene_001 --start 1 --end 9 --profile FULL
 
-The exporter attempts depth/Z, normals, position, vector, UV, object/material index, diffuse, glossy, transmission, emission, environment, shadow, ambient-occlusion and Cryptomatte passes when exposed by the active Blender version and render engine. It writes multilayer OpenEXR frames, per-frame JSON scene state and evaluated mesh arrays containing vertices, normals, topology, UVs, face material indices and world transforms.
+The exporter attempts depth/Z, normals, position, vector, UV, object/material index, diffuse, glossy, transmission, emission, environment, shadow, ambient-occlusion and Cryptomatte passes when exposed by the active Blender version and render engine. It writes multilayer OpenEXR frames, per-frame JSON scene state and evaluated mesh geometry as per-object/per-frame compressed JSON files. The geometry records include local/world vertices, world vertex normals, edges, face topology, face material indices, UV coordinates and world transforms.
+
+The capture script uses Blender's bundled Python standard library; NumPy is not required inside Blender. Dataset conversion and model training use ordinary Python and NumPy outside the engine.
 
 Custom AOVs, cloth/particle internals and Geometry Nodes-specific attributes need scene-specific shader or extraction logic. The manifest records unavailable passes and geometry-export failures.
 

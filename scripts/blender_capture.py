@@ -6,6 +6,7 @@ blender --background scene.blend --python scripts/blender_capture.py -- --output
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import re
 import sys
@@ -13,7 +14,6 @@ from pathlib import Path
 from typing import Any
 
 import bpy
-import numpy as np
 from mathutils import Vector
 
 PASS_FLAGS = {
@@ -88,22 +88,20 @@ def capture_material(mat) -> dict[str, Any]:
 
 
 def export_evaluated_mesh(obj, geometry_dir: Path, frame_stem: str) -> dict[str, Any]:
+    """Export evaluated mesh geometry using only Blender's standard Python runtime."""
     depsgraph = bpy.context.evaluated_depsgraph_get()
     evaluated = obj.evaluated_get(depsgraph)
     mesh = evaluated.to_mesh(preserve_all_data_layers=True, depsgraph=depsgraph)
     try:
-        vertices_local = np.asarray([tuple(v.co) for v in mesh.vertices], dtype=np.float32)
-        vertices_world = np.asarray(
-            [tuple(evaluated.matrix_world @ v.co) for v in mesh.vertices], dtype=np.float32
-        )
+        vertices_local = [list(v.co) for v in mesh.vertices]
+        vertices_world = [list(evaluated.matrix_world @ v.co) for v in mesh.vertices]
         normal_matrix = evaluated.matrix_world.to_3x3().inverted().transposed()
         normals_world = []
         for vertex in mesh.vertices:
             normal = normal_matrix @ vertex.normal
             if normal.length:
                 normal.normalize()
-            normals_world.append(tuple(normal))
-        normals_world = np.asarray(normals_world, dtype=np.float32)
+            normals_world.append(list(normal))
         face_offsets = [0]
         face_indices = []
         face_materials = []
@@ -112,31 +110,28 @@ def export_evaluated_mesh(obj, geometry_dir: Path, frame_stem: str) -> dict[str,
             face_indices.extend(int(index) for index in polygon.vertices)
             face_offsets.append(len(face_indices))
             face_materials.append(int(polygon.material_index))
-            face_normals.append(tuple(polygon.normal))
-        edge_indices = np.asarray([tuple(edge.vertices) for edge in mesh.edges], dtype=np.int32)
-        if edge_indices.size == 0:
-            edge_indices = np.empty((0, 2), dtype=np.int32)
+            face_normals.append(list(polygon.normal))
+        edge_indices = [list(edge.vertices) for edge in mesh.edges]
         uv_layer = mesh.uv_layers.active
-        uv_values = (
-            np.asarray([tuple(loop.uv) for loop in uv_layer.data], dtype=np.float32)
-            if uv_layer else np.empty((0, 2), dtype=np.float32)
-        )
-        target = geometry_dir / f"{frame_stem}_{safe_name(obj.name)}.npz"
-        np.savez_compressed(
-            target,
-            vertices_local=vertices_local,
-            vertices_world=vertices_world,
-            vertex_normals_world=normals_world,
-            edges=edge_indices,
-            face_offsets=np.asarray(face_offsets, dtype=np.int64),
-            face_vertex_indices=np.asarray(face_indices, dtype=np.int32),
-            face_material_indices=np.asarray(face_materials, dtype=np.int32),
-            face_normals=np.asarray(face_normals, dtype=np.float32),
-            loop_uvs=uv_values,
-            world_matrix=np.asarray(matrix_rows(evaluated.matrix_world), dtype=np.float32),
-        )
+        uv_values = [list(loop.uv) for loop in uv_layer.data] if uv_layer else []
+        payload = {
+            "vertices_local": vertices_local,
+            "vertices_world": vertices_world,
+            "vertex_normals_world": normals_world,
+            "edges": edge_indices,
+            "face_offsets": face_offsets,
+            "face_vertex_indices": face_indices,
+            "face_material_indices": face_materials,
+            "face_normals_local": face_normals,
+            "loop_uvs": uv_values,
+            "world_matrix": matrix_rows(evaluated.matrix_world),
+        }
+        target = geometry_dir / f"{frame_stem}_{safe_name(obj.name)}.json.gz"
+        with gzip.open(target, "wt", encoding="utf-8") as handle:
+            json.dump(payload, handle, separators=(",", ":"))
         return {
             "file": str(target),
+            "format": "json.gz",
             "vertices": len(mesh.vertices),
             "edges": len(mesh.edges),
             "polygons": len(mesh.polygons),
