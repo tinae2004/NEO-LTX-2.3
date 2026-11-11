@@ -194,6 +194,7 @@ def main():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", default="./neo_demo_scene.blend")
+    parser.add_argument("--renderer", choices=["EEVEE", "CYCLES"], default="EEVEE")
     args = parser.parse_args(argv)
 
     clear_scene()
