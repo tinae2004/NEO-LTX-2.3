@@ -130,58 +130,21 @@ def rent_with_refresh(api, gpu_names, gpu_order, max_hourly, budget, max_hours,
 def remote_training_script(epochs,samples):
     return f"""#!/usr/bin/env bash
 set -euo pipefail
-export DEBIAN_FRONTEND=noninteractive
 export OMP_NUM_THREADS=4
 export OPENBLAS_NUM_THREADS=4
 cd /workspace/neo
-mkdir -p artifacts datasets logs data/captures
+mkdir -p artifacts datasets logs
 echo '=== GPU preflight ==='
 nvidia-smi
-echo '=== Install Blender and project dependencies ==='
-apt-get update
-apt-get install -y --no-install-recommends curl xz-utils ca-certificates python3 python3-venv python3-pip python-is-python3 libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libgbm1 libsm6 libxext6 libxrender1 libxfixes3 libxi6 libxkbcommon0 libdbus-1-3 libfontconfig1
-BLENDER_ARCHIVE="blender-{BLENDER_VERSION}-linux-x64.tar.xz"
-if [ ! -x "/opt/blender-{BLENDER_VERSION}-linux-x64/blender" ]; then
-  curl -fL --retry 3 --retry-delay 2 -o "/tmp/$BLENDER_ARCHIVE" "https://download.blender.org/release/Blender4.5/$BLENDER_ARCHIVE"
-  tar -xf "/tmp/$BLENDER_ARCHIVE" -C /opt
-fi
-export PATH="/opt/blender-{BLENDER_VERSION}-linux-x64:$PATH"
-blender --background --python-expr "import bpy; print('Blender:',bpy.app.version_string)"
-python3 -m venv /workspace/neo/.venv
+echo '=== Reuse CUDA PyTorch from the prebuilt Vast PyTorch image ==='
+python3 -m venv --system-site-packages /workspace/neo/.venv
 source /workspace/neo/.venv/bin/activate
 command -v python
 python --version
-python -m pip install --upgrade pip
-if ! python -c "import torch; assert torch.cuda.is_available()" >/dev/null 2>&1; then
-  echo 'CUDA PyTorch not ready; installing CUDA 12.8 wheels'
-  python -m pip install --index-url https://download.pytorch.org/whl/cu128 torch torchvision
-fi
-python -c "import torch; assert torch.cuda.is_available(), 'CUDA PyTorch is not available'; print('CUDA PyTorch ready:', torch.__version__, torch.version.cuda)"
-python -m pip install -e '.[train,dev]'
-
-echo '=== Generate synthetic supervision ==='
-python scripts/generate_synthetic_dataset.py --samples {samples} --size 64 --seed 20261111 --output datasets/synthetic_v1
-
-echo '=== Create procedural multi-action Blender scene ==='
-blender --background --python scripts/create_blender_demo_scene.py -- --output data/neo_demo_scene.blend --renderer EEVEE
-
-echo '=== Capture head-turn segment ==='
-blender --background data/neo_demo_scene.blend --python scripts/blender_capture.py -- --output data/captures/head_turn --start 1 --end 9 --profile FULL --skip-render
-python scripts/build_dataset_from_blender.py --capture data/captures/head_turn --output datasets/blender_head_turn --action-id 0
-python scripts/build_dense_flow_pairs.py --capture data/captures/head_turn --output datasets/dense_head_turn --size 64
-
-echo '=== Capture left-arm segment ==='
-blender --background data/neo_demo_scene.blend --python scripts/blender_capture.py -- --output data/captures/left_arm_raise --start 10 --end 18 --profile FULL --skip-render
-python scripts/build_dataset_from_blender.py --capture data/captures/left_arm_raise --output datasets/blender_left_arm --action-id 1
-python scripts/build_dense_flow_pairs.py --capture data/captures/left_arm_raise --output datasets/dense_left_arm --size 64
-
-echo '=== Capture walking segment ==='
-blender --background data/neo_demo_scene.blend --python scripts/blender_capture.py -- --output data/captures/walk_step --start 19 --end 27 --profile FULL --skip-render
-python scripts/build_dataset_from_blender.py --capture data/captures/walk_step --output datasets/blender_walk --action-id 4
-python scripts/build_dense_flow_pairs.py --capture data/captures/walk_step --output datasets/dense_walk --size 64
-
-echo '=== Merge training datasets ==='
-python scripts/merge_datasets.py --inputs datasets/synthetic_v1 datasets/blender_head_turn datasets/blender_left_arm datasets/blender_walk --output datasets/combined_v1
+python -c "import torch; assert torch.cuda.is_available(), 'Preinstalled CUDA PyTorch is missing or cannot see the GPU'; print('CUDA PyTorch ready:', torch.__version__, torch.version.cuda); print('GPU:', torch.cuda.get_device_name(0))"
+python -m pip install --no-deps -e .
+test -s datasets/combined_v1/train.npz
+test -s datasets/combined_v1/val.npz
 
 echo '=== Train baseline on CUDA; save best and latest checkpoints ==='
 python training/train_translator.py --data datasets/combined_v1 --epochs {epochs} --batch-size 64 --workers 4 --device cuda --patience 12 --min-delta 0.0001 --seed 20261111 --output artifacts/neo_fastframe_motion.pt 2>&1 | tee logs/gpu_training.log
@@ -299,6 +262,18 @@ def main():
         source.stdout.close()
         receive_rc=receiver.wait(timeout=300); source_rc=source.wait(timeout=60)
         if receive_rc or source_rc: raise RuntimeError("Source transfer to Vast worker failed.")
+
+        # Blender captures and datasets are prepared on the free GitHub runner before rental.
+        input_dir=Path("vast-training-input")
+        if not (input_dir/"combined_v1"/"train.npz").is_file() or not (input_dir/"combined_v1"/"val.npz").is_file():
+            raise RuntimeError("Prepared Blender/synthetic dataset is missing; refusing to spend GPU time on data preparation.")
+        dataset_tar=subprocess.Popen(["tar","-czf","-","-C",str(input_dir),"."],stdout=subprocess.PIPE)
+        dataset_unpack="mkdir -p /workspace/neo/datasets && tar -xzf - -C /workspace/neo/datasets"
+        dataset_receiver=subprocess.Popen(ssh_base+[f"bash -lc {shlex.quote(dataset_unpack)}"],stdin=dataset_tar.stdout)
+        dataset_tar.stdout.close()
+        dataset_receive_rc=dataset_receiver.wait(timeout=300); dataset_tar_rc=dataset_tar.wait(timeout=60)
+        if dataset_receive_rc or dataset_tar_rc:
+            raise RuntimeError("Prepared training dataset transfer to Vast worker failed.")
 
         script=remote_training_script(a.epochs,a.samples)
         remote="bash -lc "+shlex.quote(script)
