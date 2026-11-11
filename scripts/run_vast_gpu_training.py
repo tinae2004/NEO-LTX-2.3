@@ -90,7 +90,7 @@ echo '=== GPU preflight ==='
 nvidia-smi
 echo '=== Install Blender and project dependencies ==='
 apt-get update
-apt-get install -y --no-install-recommends curl xz-utils ca-certificates python3 python3-pip python-is-python3 libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libgbm1 libsm6 libxext6 libxrender1 libxfixes3 libxi6 libxkbcommon0 libdbus-1-3 libfontconfig1
+apt-get install -y --no-install-recommends curl xz-utils ca-certificates python3 python3-venv python3-pip python-is-python3 libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libgbm1 libsm6 libxext6 libxrender1 libxfixes3 libxi6 libxkbcommon0 libdbus-1-3 libfontconfig1
 BLENDER_ARCHIVE="blender-{BLENDER_VERSION}-linux-x64.tar.xz"
 if [ ! -x "/opt/blender-{BLENDER_VERSION}-linux-x64/blender" ]; then
   curl -fL --retry 3 --retry-delay 2 -o "/tmp/$BLENDER_ARCHIVE" "https://download.blender.org/release/Blender4.5/$BLENDER_ARCHIVE"
@@ -98,6 +98,8 @@ if [ ! -x "/opt/blender-{BLENDER_VERSION}-linux-x64/blender" ]; then
 fi
 export PATH="/opt/blender-{BLENDER_VERSION}-linux-x64:$PATH"
 blender --background --python-expr "import bpy; print('Blender:',bpy.app.version_string)"
+python3 -m venv /workspace/neo/.venv
+source /workspace/neo/.venv/bin/activate
 command -v python
 python --version
 python -m pip install --upgrade pip
