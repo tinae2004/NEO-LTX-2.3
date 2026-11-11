@@ -10,3 +10,21 @@ def test_remote_training_script_renders_fstring_and_training_commands():
     assert "training/train_translator.py" in script
     assert "print(json.dumps({k:m[k]" in script
     assert "NameError" not in script
+
+
+def test_remote_training_script_bootstraps_python_and_cuda_torch():
+    script = remote_training_script(epochs=2, samples=1000)
+
+    assert "python3-pip" in script
+    assert "python-is-python3" in script
+    assert "download.pytorch.org/whl/cu128" in script
+    assert "torch.cuda.is_available()" in script
+
+
+def test_deepseek_agent_redacts_api_tokens():
+    from scripts.deepseek_agent import redact
+
+    value = redact("Authorization: Bearer abcdef123456 api_key=sk-abcdefghijklmnop")
+    assert "abcdef123456" not in value
+    assert "sk-abcdefghijklmnop" not in value
+    assert "[REDACTED]" in value
