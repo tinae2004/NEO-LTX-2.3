@@ -19,6 +19,8 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[train,dev]"
+      - name: Compile Python sources
+        run: python -m compileall -q app.py neo_video_gen scripts training tests
       - name: Run unit tests
         run: pytest -q
       - name: Generate small synthetic smoke dataset
@@ -35,3 +37,46 @@ jobs:
             artifacts/neo_translator_smoke.metrics.json
           if-no-files-found: error
           retention-days: 14
+
+  blender-capture-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Blender
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y blender
+          blender --version
+      - name: Install Python dataset dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy
+      - name: Create procedural NEO demo scene
+        run: blender --background --python scripts/create_blender_demo_scene.py -- --output /tmp/neo_demo_scene.blend
+      - name: Capture nine animated frames with FULL profile
+        run: |
+          blender --background /tmp/neo_demo_scene.blend --python scripts/blender_capture.py -- --output /tmp/neo_capture/head_turn --start 1 --end 9 --profile FULL
+      - name: Convert Blender capture to labelled training pairs
+        run: |
+          pip install .
+          python scripts/build_dataset_from_blender.py --capture /tmp/neo_capture/head_turn --output /tmp/neo_blender_dataset --action-id 0
+      - name: Verify Blender dataset arrays
+        run: |
+          python - <<'PY'
+          import numpy as np
+          from pathlib import Path
+          root = Path("/tmp/neo_blender_dataset")
+          with np.load(root / "train.npz") as train:
+              assert train["joints_3d"].ndim == 4
+              assert train["joints_3d"].shape[1:] == (2, 17, 3)
+              assert train["camera"].shape[1:] == (2, 4, 4)
+              assert train["target_flow"].shape[1:] == (2, 64, 64)
+              assert len(train["action_id"]) > 0
+          with np.load(root / "val.npz") as val:
+              assert len(val["action_id"]) > 0
+          print("Blender capture-to-dataset smoke test passed")
+          PY
