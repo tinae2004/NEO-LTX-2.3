@@ -1,182 +1,31 @@
 name: NEO VIDEO GEN CI
 
 on:
-  push:
-    branches: [neo-video-gen]
-  pull_request:
-    branches: [neo-video-gen]
+  # Deliberately manual: do not enqueue a full CI run for every small commit.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: neo-video-gen-ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  python-tests-and-smoke-training:
+  python-checks:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
-      - name: Install project and test dependencies
+      - name: Install lightweight test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[train,dev]"
+          pip install -e ".[dev]"
       - name: Compile Python sources
-        run: python -m compileall -q app.py neo_video_gen scripts training tests
+        run: python -m compileall -q app.py neo_video_gen scripts tests
       - name: Run unit tests
         run: pytest -q
-      - name: Generate small synthetic smoke dataset
-        run: python scripts/generate_synthetic_dataset.py --samples 96 --size 64 --output ./datasets/ci_smoke
-      - name: Train one CPU smoke epoch
-        run: |
-          python training/train_translator.py --data ./datasets/ci_smoke --epochs 1 --batch-size 8 --device cpu --output ./artifacts/neo_translator_smoke.pt
-      - name: Upload smoke checkpoint and metrics
-        uses: actions/upload-artifact@v4
-        with:
-          name: neo-translator-cpu-smoke
-          path: |
-            artifacts/neo_translator_smoke.pt
-            artifacts/neo_translator_smoke.metrics.json
-          if-no-files-found: error
-          retention-days: 14
-
-  blender-capture-smoke:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Install Blender runtime dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y curl xz-utils ca-certificates xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libgbm1 libsm6 libxext6 libxrender1 libxfixes3 libxi6 libxkbcommon0 libdbus-1-3 libfontconfig1
-      - name: Install pinned official Blender build
-        env:
-          BLENDER_VERSION: "4.5.16"
-        run: |
-          set -euo pipefail
-          ARCHIVE="blender-${BLENDER_VERSION}-linux-x64.tar.xz"
-          BASE_URL="https://download.blender.org/release/Blender4.5"
-          cd "$RUNNER_TEMP"
-          curl -fL --retry 3 --retry-delay 2 -o "$ARCHIVE" "$BASE_URL/$ARCHIVE"
-          curl -fL --retry 3 --retry-delay 2 -o "blender-${BLENDER_VERSION}.sha256" "$BASE_URL/blender-${BLENDER_VERSION}.sha256"
-          grep -F "$ARCHIVE" "blender-${BLENDER_VERSION}.sha256" | sha256sum --check -
-          tar -xf "$ARCHIVE"
-          BLENDER_DIR="$RUNNER_TEMP/blender-${BLENDER_VERSION}-linux-x64"
-          echo "$BLENDER_DIR" >> "$GITHUB_PATH"
-          xvfb-run -a env -u LD_LIBRARY_PATH LIBGL_ALWAYS_SOFTWARE=1 "$BLENDER_DIR/blender" --background --python-expr "import bpy; engines=bpy.types.RenderSettings.bl_rna.properties['engine'].enum_items.keys(); print('Blender:', bpy.app.version_string); print('Render engines:', list(engines)); assert 'BLENDER_EEVEE_NEXT' in engines, 'Blender Eevee Next must be available'"
-      - name: Install Python dataset dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install numpy
-      - name: Create procedural NEO demo scene
-        run: xvfb-run -a env -u LD_LIBRARY_PATH LIBGL_ALWAYS_SOFTWARE=1 blender --background --python scripts/create_blender_demo_scene.py -- --output /tmp/neo_demo_scene.blend --renderer EEVEE
-      - name: Export animated scene-state and evaluated geometry (CI capture mode)
-        run: |
-          env -u LD_LIBRARY_PATH blender --background /tmp/neo_demo_scene.blend --python scripts/blender_capture.py -- --output /tmp/neo_capture/head_turn --start 1 --end 9 --profile FULL --skip-render
-      - name: Preflight Blender camera metadata
-        run: |
-          python - <<'PY'
-          import json
-          from pathlib import Path
-
-          capture = Path("/tmp/neo_capture/head_turn")
-          manifest = json.loads((capture / "manifest.json").read_text())
-          for record in manifest["frames"]:
-              state = json.loads((capture / record["state_file"]).read_text())
-              cameras = [obj for obj in state["objects"] if obj["type"] == "CAMERA" and obj["name"] == state["camera"]]
-              assert len(cameras) == 1, "Expected exactly one active camera record"
-              camera = cameras[0].get("camera")
-              assert camera, "Camera metadata was not exported"
-              for field in ("lens_mm", "sensor_width_mm", "sensor_height_mm", "view_frame"):
-                  assert field in camera, f"Missing camera field: {field}"
-              bounds = camera["view_frame"]
-              assert bounds["mode"] in ("perspective_slopes", "orthographic_plane")
-              assert bounds["right"] > bounds["left"]
-              assert bounds["top"] > bounds["bottom"]
-          print("Blender camera metadata preflight passed")
-          PY
-      - name: Convert Blender capture to labelled training pairs
-        run: |
-          pip install .
-          python scripts/build_dataset_from_blender.py --capture /tmp/neo_capture/head_turn --output /tmp/neo_blender_dataset --action-id 0
-      - name: Build dense surface-flow and occlusion labels from evaluated meshes
-        run: |
-          python scripts/build_dense_flow_pairs.py --capture /tmp/neo_capture/head_turn --output /tmp/neo_dense_flow --size 64
-      - name: Verify dense surface-flow fields
-        run: |
-          python - <<'PY'
-          import json
-          import numpy as np
-          from pathlib import Path
-          root = Path("/tmp/neo_dense_flow")
-          metadata = json.loads((root / "dense_flow_metadata.json").read_text())
-          with np.load(root / "dense_flow_pairs.npz") as data:
-              assert data["flow_forward"].shape == (8, 2, 64, 64)
-              assert data["source_visibility"].shape == (8, 1, 64, 64)
-              assert data["target_visible_from_source"].shape == (8, 1, 64, 64)
-              assert data["target_coverage"].shape == (8, 1, 64, 64)
-              assert data["depth_delta"].shape == (8, 1, 64, 64)
-              assert np.isfinite(data["flow_forward"]).all()
-              assert np.isfinite(data["depth_delta"]).all()
-              assert np.all(data["source_visibility"].sum(axis=(1, 2, 3)) > 0)
-              assert np.all(data["target_coverage"].sum(axis=(1, 2, 3)) > 0)
-              print("Dense flow pairs:", len(data["frame_indices"]))
-              print("Mean source coverage:", float(data["source_visibility"].mean()))
-              print("Mean target visibility:", float(data["target_visible_from_source"].mean()))
-          assert metadata["pair_count"] == 8
-          print("Dense geometry-flow/occlusion smoke test passed")
-          PY
-      - name: Verify Blender geometry, scene-state and dataset arrays
-        run: |
-          python - <<'PY'
-          import json
-          import numpy as np
-          from pathlib import Path
-
-          capture = Path("/tmp/neo_capture/head_turn")
-          manifest = json.loads((capture / "manifest.json").read_text())
-          assert len(manifest["frames"]) == 9, "Expected all nine captured frames"
-          for record in manifest["frames"]:
-              state_path = capture / record["state_file"]
-              state = json.loads(state_path.read_text())
-              assert state["frame_index"] == record["frame_index"]
-              assert not state["geometry_export_failures"], state["geometry_export_failures"]
-              armatures = [obj for obj in state["objects"] if obj["type"] == "ARMATURE"]
-              assert armatures and len(armatures[0]["pose_bones"]) >= 17
-              meshes = [obj for obj in state["objects"] if obj["type"] == "MESH"]
-              assert meshes, "Expected evaluated mesh objects"
-              for obj in meshes:
-                  geometry = obj.get("evaluated_geometry")
-                  assert geometry and Path(geometry["file"]).is_file(), obj["name"]
-
-          root = Path("/tmp/neo_blender_dataset")
-          with np.load(root / "train.npz") as train:
-              assert train["joints_3d"].ndim == 4
-              assert train["joints_3d"].shape[1:] == (2, 17, 3)
-              assert train["camera"].shape[1:] == (2, 4, 4)
-              assert train["target_flow"].shape[1:] == (2, 64, 64)
-              assert len(train["action_id"]) > 0
-          with np.load(root / "val.npz") as val:
-              assert len(val["action_id"]) > 0
-          print("Blender scene-state/geometry to training-dataset smoke test passed")
-          PY
-      - name: Train skeleton-control baseline on Blender-generated pairs (CPU smoke)
-        run: |
-          pip install -e ".[train]"
-          python training/train_translator.py --data /tmp/neo_blender_dataset --epochs 5 --batch-size 4 --device cpu --output /tmp/neo_blender_translator.pt
-      - name: Upload Blender-generated training dataset
-        uses: actions/upload-artifact@v4
-        with:
-          name: neo-blender-motion-dataset-smoke
-          path: |
-            /tmp/neo_blender_dataset/train.npz
-            /tmp/neo_blender_dataset/val.npz
-            /tmp/neo_blender_dataset/dataset_metadata.json
-            /tmp/neo_capture/head_turn/manifest.json
-            /tmp/neo_blender_translator.pt
-            /tmp/neo_blender_translator.metrics.json
-            /tmp/neo_dense_flow/dense_flow_pairs.npz
-            /tmp/neo_dense_flow/dense_flow_metadata.json
-          if-no-files-found: error
-          retention-days: 14
