@@ -202,24 +202,31 @@ def capture_object(obj, geometry_dir: Path, frame_stem: str) -> dict[str, Any]:
         ]
     if obj.type == "CAMERA":
         cam = obj.data
-        item["camera"] = {
-            "lens_mm": cam.lens,
-            "sensor_width_mm": cam.sensor_width,
-            "sensor_height_mm": cam.sensor_height,
-            "sensor_fit": cam.sensor_fit,
-            "clip_start": cam.clip_start,
-            "clip_end": cam.clip_end,
-            "dof_enabled": cam.dof.use_dof,
-            "focus_distance": cam.dof.focus_distance,
-            "f_stop": cam.dof.aperture_fstop,
-            "projection_matrix": matrix_rows(cam.calc_matrix_camera(
+        camera_data = {
+            "lens_mm": float(cam.lens),
+            "sensor_width_mm": float(cam.sensor_width),
+            "sensor_height_mm": float(cam.sensor_height),
+            "sensor_fit": str(cam.sensor_fit),
+            "clip_start": float(cam.clip_start),
+            "clip_end": float(cam.clip_end),
+            "dof_enabled": bool(cam.dof.use_dof),
+            "focus_distance": float(cam.dof.focus_distance),
+            "f_stop": float(cam.dof.aperture_fstop),
+        }
+        # Projection-matrix calculation is useful for later dense reprojection,
+        # but it is not required by the current skeleton-pair converter. Keep
+        # camera intrinsics even if a Blender build cannot calculate this matrix.
+        try:
+            camera_data["projection_matrix"] = matrix_rows(cam.calc_matrix_camera(
                 bpy.context.evaluated_depsgraph_get(),
                 x=bpy.context.scene.render.resolution_x,
                 y=bpy.context.scene.render.resolution_y,
                 scale_x=bpy.context.scene.render.pixel_aspect_x,
                 scale_y=bpy.context.scene.render.pixel_aspect_y,
-            )),
-        }
+            ))
+        except Exception as exc:
+            camera_data["projection_matrix_error"] = f"{type(exc).__name__}: {exc}"
+        item["camera"] = camera_data
     if obj.type == "LIGHT":
         item["light"] = {
             "type": obj.data.type,
@@ -458,7 +465,9 @@ def main():
             try:
                 objects.append(capture_object(obj, geometry_dir, stem))
             except Exception as exc:
-                geometry_failures.append({"object": obj.name, "error": str(exc)})
+                error_record = {"object": obj.name, "error": f"{type(exc).__name__}: {exc}"}
+                geometry_failures.append(error_record)
+                print(f"NEO capture warning [{obj.name}]: {error_record['error']}")
                 objects.append({
                     "name": obj.name, "type": obj.type,
                     "world_matrix": matrix_rows(obj.matrix_world),

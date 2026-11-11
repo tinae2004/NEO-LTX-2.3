@@ -71,16 +71,8 @@ jobs:
           pip install numpy
       - name: Create procedural NEO demo scene
         run: xvfb-run -a env -u LD_LIBRARY_PATH LIBGL_ALWAYS_SOFTWARE=1 blender --background --python scripts/create_blender_demo_scene.py -- --output /tmp/neo_demo_scene.blend --renderer EEVEE
-      - name: Try FULL EEVEE capture (bounded to 150 seconds)
-        id: full_capture
-        continue-on-error: true
-        timeout-minutes: 3
+      - name: Export animated scene-state and evaluated geometry (CI capture mode)
         run: |
-          timeout 150s xvfb-run -a env -u LD_LIBRARY_PATH LIBGL_ALWAYS_SOFTWARE=1 blender --background /tmp/neo_demo_scene.blend --python scripts/blender_capture.py -- --output /tmp/neo_capture/head_turn --start 1 --end 9 --profile FULL
-      - name: Fall back to geometry and scene-state capture if rendering is unavailable
-        if: steps.full_capture.outcome == 'failure'
-        run: |
-          rm -rf /tmp/neo_capture/head_turn
           env -u LD_LIBRARY_PATH blender --background /tmp/neo_demo_scene.blend --python scripts/blender_capture.py -- --output /tmp/neo_capture/head_turn --start 1 --end 9 --profile FULL --skip-render
       - name: Convert Blender capture to labelled training pairs
         run: |
