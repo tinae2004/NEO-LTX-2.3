@@ -259,6 +259,105 @@ def enable_passes(layer):
     return enabled, unavailable
 
 
+def setup_blender5_compositor(scene, view_layer, frames_dir: Path):
+    """Configure Blender 5.x scene compositor to export all available render-layer sockets.
+
+    Blender 5 moved the scene compositor into scene.compositing_node_group and
+    replaced the old RenderSettings multilayer file format with a compositor
+    File Output node. Each supported Render Layers output is written as a layer
+    in one multilayer EXR per frame.
+    """
+    tree = bpy.data.node_groups.new("NEO_FULL_CAPTURE", "CompositorNodeTree")
+    scene.compositing_node_group = tree
+    tree.interface.new_socket(name="Image", in_out="OUTPUT", socket_type="NodeSocketColor")
+
+    render_layers = tree.nodes.new("CompositorNodeRLayers")
+    render_layers.layer = view_layer.name
+    group_output = tree.nodes.new("NodeGroupOutput")
+    tree.links.new(render_layers.outputs["Image"], group_output.inputs["Image"])
+
+    file_output = tree.nodes.new("CompositorNodeOutputFile")
+    file_output.directory = str(frames_dir)
+    file_output.file_name = "neo_passes_"
+    file_output.format.file_format = "OPEN_EXR_MULTILAYER"
+    file_output.format.color_depth = "32"
+    file_output.format.exr_codec = "ZIP"
+    file_output.file_output_items.clear()
+
+    exported = []
+    unavailable = []
+    used_names = set()
+    for socket in render_layers.outputs:
+        socket_type_name = getattr(socket, "bl_idname", "")
+        if "Color" in socket_type_name or "RGBA" in socket_type_name:
+            socket_type = "RGBA"
+        elif "Vector" in socket_type_name:
+            socket_type = "VECTOR"
+        elif "Float" in socket_type_name:
+            socket_type = "FLOAT"
+        elif "Int" in socket_type_name:
+            socket_type = "INT"
+        elif "Bool" in socket_type_name:
+            socket_type = "BOOLEAN"
+        else:
+            unavailable.append({
+                "socket": socket.name,
+                "socket_type": socket_type_name,
+                "reason": "Unsupported File Output socket data type",
+            })
+            continue
+
+        base_name = safe_name(socket.name.lower())
+        channel_name = base_name
+        suffix = 2
+        while channel_name in used_names:
+            channel_name = f"{base_name}_{suffix}"
+            suffix += 1
+        used_names.add(channel_name)
+
+        try:
+            item = file_output.file_output_items.new(socket_type, channel_name)
+            if socket_type == "VECTOR":
+                try:
+                    item.vector_socket_dimensions = 3
+                except (AttributeError, TypeError, ValueError):
+                    pass
+            target_socket = file_output.inputs.get(channel_name)
+            if target_socket is None:
+                raise RuntimeError(f"File Output input {channel_name!r} was not created")
+            tree.links.new(socket, target_socket)
+            exported.append({
+                "channel": channel_name,
+                "render_layer_socket": socket.name,
+                "socket_type": socket_type,
+            })
+        except Exception as exc:
+            unavailable.append({
+                "socket": socket.name,
+                "socket_type": socket_type,
+                "reason": str(exc),
+            })
+
+    if not exported:
+        raise RuntimeError("Blender 5 compositor exposed no render-layer sockets for capture")
+    return file_output, exported, unavailable
+
+
+def discover_frame_outputs(frames_dir: Path, stem: str) -> dict[str, str]:
+    """Find actual per-frame output paths instead of assuming Blender's filename padding."""
+    found = {}
+    for path in sorted(frames_dir.glob(f"{stem}*")):
+        if not path.is_file():
+            continue
+        lowered = path.name.lower()
+        if "_beauty_" in lowered or lowered.startswith("beauty_"):
+            found["beauty"] = str(Path("frames") / path.name)
+        elif "_passes_" in lowered or lowered.startswith("neo_passes_"):
+            found["multilayer_exr"] = str(Path("frames") / path.name)
+        elif path.suffix.lower() in {".exr", ".png"}:
+            found.setdefault("render_output", str(Path("frames") / path.name))
+    return found
+
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     parser = argparse.ArgumentParser()
@@ -278,9 +377,23 @@ def main():
     geometry_dir = output / "geometry"
     frames_dir.mkdir(parents=True, exist_ok=True)
     geometry_dir.mkdir(parents=True, exist_ok=True)
-    enabled, unavailable = enable_passes(bpy.context.view_layer)
+    view_layer = bpy.context.view_layer
+    enabled, unavailable = enable_passes(view_layer)
 
-    scene.render.image_settings.file_format = "OPEN_EXR_MULTILAYER"
+    blender5 = hasattr(scene, "compositing_node_group")
+    file_output = None
+    compositor_channels = []
+    compositor_unavailable = []
+    if blender5:
+        file_output, compositor_channels, compositor_unavailable = setup_blender5_compositor(
+            scene, view_layer, frames_dir
+        )
+        # Blender 5.x saves the beauty render as a regular EXR. The compositor
+        # File Output node writes the enabled passes to a separate multilayer EXR.
+        scene.render.image_settings.file_format = "OPEN_EXR"
+    else:
+        # Blender 4.x still supports direct multilayer EXR render output.
+        scene.render.image_settings.file_format = "OPEN_EXR_MULTILAYER"
     scene.render.image_settings.color_depth = "32"
     scene.render.image_settings.exr_codec = "ZIP"
     scene.render.resolution_percentage = 100
@@ -303,11 +416,16 @@ def main():
         },
         "frames": [],
         "assets": [],
-        "available_channels": enabled + ["evaluated_mesh_geometry", "scene_state_json"],
+        "available_channels": (
+            [item["channel"] for item in compositor_channels]
+            if blender5 else enabled
+        ) + ["evaluated_mesh_geometry", "scene_state_json"],
         "unavailable_channels": unavailable,
+        "compositor_channels": compositor_channels,
         "notes": [
-            "Multilayer EXR contains enabled passes supported by this Blender version and render engine.",
-            "Evaluated mesh arrays are saved per object and frame in geometry/.",
+            "Blender 5.x uses a compositor File Output node for multilayer EXR render-pass capture.",
+            "Blender 4.x uses direct multilayer EXR render output.",
+            "Evaluated mesh arrays are saved per object and frame as compressed JSON in geometry/.",
             "Unsupported channels are explicitly listed; custom AOVs require scene-specific shader setup.",
         ],
     }
@@ -316,8 +434,13 @@ def main():
         scene.frame_set(frame)
         bpy.context.view_layer.update()
         stem = f"frame_{frame:06d}"
-        scene.render.filepath = str(frames_dir / stem)
+        if blender5:
+            scene.render.filepath = str(frames_dir / f"{stem}_beauty_")
+            file_output.file_name = f"{stem}_passes_"
+        else:
+            scene.render.filepath = str(frames_dir / stem)
         bpy.ops.render.render(write_still=True)
+        frame_outputs = discover_frame_outputs(frames_dir, stem)
 
         objects = []
         geometry_failures = []
@@ -351,16 +474,22 @@ def main():
         }
         state_file = frames_dir / f"{stem}.json"
         state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        pass_paths = {
+            **frame_outputs,
+            "evaluated_geometry_dir": "geometry/",
+        }
+        if not blender5 and frame_outputs:
+            pass_paths["multilayer_exr"] = frame_outputs.get("render_output")
+        elif blender5:
+            for channel in compositor_channels:
+                pass_paths.setdefault(channel["channel"], frame_outputs.get("multilayer_exr"))
         manifest["frames"].append({
             "frame_index": frame,
             "timestamp_seconds": timestamp,
-            "passes": {
-                "multilayer_exr": f"frames/{stem}.exr",
-                "evaluated_geometry_dir": "geometry/",
-            },
+            "passes": pass_paths,
             "state_file": f"frames/{stem}.json",
             "available_channels": manifest["available_channels"],
-            "unavailable_channels": unavailable,
+            "unavailable_channels": unavailable + compositor_unavailable,
             "geometry_export_failures": geometry_failures,
         })
 
