@@ -15,7 +15,7 @@ from typing import Any
 import requests
 
 API_URL = "https://api.deepseek.com/chat/completions"
-MODEL = "deepseek-chat"
+MODEL = "deepseek-flash"
 
 
 def redact(value: str) -> str:
