@@ -71,18 +71,44 @@ jobs:
           pip install numpy
       - name: Create procedural NEO demo scene
         run: xvfb-run -a env -u LD_LIBRARY_PATH LIBGL_ALWAYS_SOFTWARE=1 blender --background --python scripts/create_blender_demo_scene.py -- --output /tmp/neo_demo_scene.blend --renderer EEVEE
-      - name: Capture nine animated frames with FULL profile
+      - name: Try FULL EEVEE capture (bounded to 150 seconds)
+        id: full_capture
+        continue-on-error: true
+        timeout-minutes: 3
         run: |
-          xvfb-run -a env -u LD_LIBRARY_PATH LIBGL_ALWAYS_SOFTWARE=1 blender --background /tmp/neo_demo_scene.blend --python scripts/blender_capture.py -- --output /tmp/neo_capture/head_turn --start 1 --end 9 --profile FULL
+          timeout 150s xvfb-run -a env -u LD_LIBRARY_PATH LIBGL_ALWAYS_SOFTWARE=1 blender --background /tmp/neo_demo_scene.blend --python scripts/blender_capture.py -- --output /tmp/neo_capture/head_turn --start 1 --end 9 --profile FULL
+      - name: Fall back to geometry and scene-state capture if rendering is unavailable
+        if: steps.full_capture.outcome == 'failure'
+        run: |
+          rm -rf /tmp/neo_capture/head_turn
+          env -u LD_LIBRARY_PATH blender --background /tmp/neo_demo_scene.blend --python scripts/blender_capture.py -- --output /tmp/neo_capture/head_turn --start 1 --end 9 --profile FULL --skip-render
       - name: Convert Blender capture to labelled training pairs
         run: |
           pip install .
           python scripts/build_dataset_from_blender.py --capture /tmp/neo_capture/head_turn --output /tmp/neo_blender_dataset --action-id 0
-      - name: Verify Blender dataset arrays
+      - name: Verify Blender geometry, scene-state and dataset arrays
         run: |
           python - <<'PY'
+          import json
           import numpy as np
           from pathlib import Path
+
+          capture = Path("/tmp/neo_capture/head_turn")
+          manifest = json.loads((capture / "manifest.json").read_text())
+          assert len(manifest["frames"]) == 9, "Expected all nine captured frames"
+          for record in manifest["frames"]:
+              state_path = capture / record["state_file"]
+              state = json.loads(state_path.read_text())
+              assert state["frame_index"] == record["frame_index"]
+              assert not state["geometry_export_failures"], state["geometry_export_failures"]
+              armatures = [obj for obj in state["objects"] if obj["type"] == "ARMATURE"]
+              assert armatures and len(armatures[0]["pose_bones"]) >= 17
+              meshes = [obj for obj in state["objects"] if obj["type"] == "MESH"]
+              assert meshes, "Expected evaluated mesh objects"
+              for obj in meshes:
+                  geometry = obj.get("evaluated_geometry")
+                  assert geometry and Path(geometry["file"]).is_file(), obj["name"]
+
           root = Path("/tmp/neo_blender_dataset")
           with np.load(root / "train.npz") as train:
               assert train["joints_3d"].ndim == 4
@@ -92,5 +118,16 @@ jobs:
               assert len(train["action_id"]) > 0
           with np.load(root / "val.npz") as val:
               assert len(val["action_id"]) > 0
-          print("Blender capture-to-dataset smoke test passed")
+          print("Blender scene-state/geometry to training-dataset smoke test passed")
           PY
+      - name: Upload Blender-generated training dataset
+        uses: actions/upload-artifact@v4
+        with:
+          name: neo-blender-motion-dataset-smoke
+          path: |
+            /tmp/neo_blender_dataset/train.npz
+            /tmp/neo_blender_dataset/val.npz
+            /tmp/neo_blender_dataset/dataset_metadata.json
+            /tmp/neo_capture/head_turn/manifest.json
+          if-no-files-found: error
+          retention-days: 14

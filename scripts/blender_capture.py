@@ -365,6 +365,7 @@ def main():
     parser.add_argument("--start", type=int)
     parser.add_argument("--end", type=int)
     parser.add_argument("--profile", choices=["FULL", "CORE"], default="FULL")
+    parser.add_argument("--skip-render", action="store_true", help="Export per-frame state and evaluated geometry without invoking the renderer")
     args = parser.parse_args(argv)
 
     scene = bpy.context.scene
@@ -384,20 +385,21 @@ def main():
     file_output = None
     compositor_channels = []
     compositor_unavailable = []
-    if blender5:
-        file_output, compositor_channels, compositor_unavailable = setup_blender5_compositor(
-            scene, view_layer, frames_dir
-        )
-        # Blender 5.x saves the beauty render as a regular EXR. The compositor
-        # File Output node writes the enabled passes to a separate multilayer EXR.
-        scene.render.image_settings.file_format = "OPEN_EXR"
-    else:
-        # Blender 4.x still supports direct multilayer EXR render output.
-        scene.render.image_settings.file_format = "OPEN_EXR_MULTILAYER"
-    scene.render.image_settings.color_depth = "32"
-    scene.render.image_settings.exr_codec = "ZIP"
-    scene.render.resolution_percentage = 100
-    scene.render.use_file_extension = True
+    if not args.skip_render:
+        if blender5:
+            file_output, compositor_channels, compositor_unavailable = setup_blender5_compositor(
+                scene, view_layer, frames_dir
+            )
+            # Blender 5.x saves the beauty render as a regular EXR. The compositor
+            # File Output node writes the enabled passes to a separate multilayer EXR.
+            scene.render.image_settings.file_format = "OPEN_EXR"
+        else:
+            # Blender 4.x still supports direct multilayer EXR render output.
+            scene.render.image_settings.file_format = "OPEN_EXR_MULTILAYER"
+        scene.render.image_settings.color_depth = "32"
+        scene.render.image_settings.exr_codec = "ZIP"
+        scene.render.resolution_percentage = 100
+        scene.render.use_file_extension = True
 
     fps = scene.render.fps / scene.render.fps_base
     manifest = {
@@ -408,39 +410,47 @@ def main():
         "capture_profile": args.profile,
         "coordinate_system": "Blender world coordinates; right-handed; Z-up",
         "units": scene.unit_settings.system,
+        "rendering_skipped": args.skip_render,
         "scene_metadata": {
             "render_engine": scene.render.engine,
             "resolution": [scene.render.resolution_x, scene.render.resolution_y],
             "fps": fps,
+            "rendering_enabled": not args.skip_render,
             "requested_channels": list(PASS_FLAGS),
         },
         "frames": [],
         "assets": [],
         "available_channels": (
-            [item["channel"] for item in compositor_channels]
-            if blender5 else enabled
+            [] if args.skip_render else (
+                [item["channel"] for item in compositor_channels]
+                if blender5 else enabled
+            )
         ) + ["evaluated_mesh_geometry", "scene_state_json"],
-        "unavailable_channels": unavailable,
+        "unavailable_channels": unavailable + (
+            ["rendering_skipped_by_cli"] if args.skip_render else []
+        ),
         "compositor_channels": compositor_channels,
         "notes": [
             "Blender 5.x uses a compositor File Output node for multilayer EXR render-pass capture.",
             "Blender 4.x uses direct multilayer EXR render output.",
             "Evaluated mesh arrays are saved per object and frame as compressed JSON in geometry/.",
             "Unsupported channels are explicitly listed; custom AOVs require scene-specific shader setup.",
-        ],
+        ] + (["Render passes were intentionally skipped; only evaluated geometry and scene state are present."] if args.skip_render else []),
     }
 
     for frame in range(start, end + 1):
         scene.frame_set(frame)
         bpy.context.view_layer.update()
         stem = f"frame_{frame:06d}"
-        if blender5:
-            scene.render.filepath = str(frames_dir / f"{stem}_beauty_")
-            file_output.file_name = f"{stem}_passes_"
-        else:
-            scene.render.filepath = str(frames_dir / stem)
-        bpy.ops.render.render(write_still=True)
-        frame_outputs = discover_frame_outputs(frames_dir, stem)
+        frame_outputs = {}
+        if not args.skip_render:
+            if blender5:
+                scene.render.filepath = str(frames_dir / f"{stem}_beauty_")
+                file_output.file_name = f"{stem}_passes_"
+            else:
+                scene.render.filepath = str(frames_dir / stem)
+            bpy.ops.render.render(write_still=True)
+            frame_outputs = discover_frame_outputs(frames_dir, stem)
 
         objects = []
         geometry_failures = []
@@ -478,11 +488,14 @@ def main():
             **frame_outputs,
             "evaluated_geometry_dir": "geometry/",
         }
-        if not blender5 and frame_outputs:
-            pass_paths["multilayer_exr"] = frame_outputs.get("render_output")
-        elif blender5:
-            for channel in compositor_channels:
-                pass_paths.setdefault(channel["channel"], frame_outputs.get("multilayer_exr"))
+        if not args.skip_render:
+            if not blender5 and frame_outputs:
+                pass_paths["multilayer_exr"] = frame_outputs.get("render_output")
+            elif blender5:
+                for channel in compositor_channels:
+                    pass_paths.setdefault(channel["channel"], frame_outputs.get("multilayer_exr"))
+        else:
+            pass_paths["render_skipped"] = True
         manifest["frames"].append({
             "frame_index": frame,
             "timestamp_seconds": timestamp,
@@ -494,8 +507,11 @@ def main():
         })
 
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    print(f"NEO FULL capture finished: {output}")
-    print(f"Requested render passes available: {len(enabled)}; unavailable: {len(unavailable)}")
+    print(f"NEO scene capture finished: {output}")
+    if args.skip_render:
+        print("Rendering skipped; evaluated geometry and scene-state export completed.")
+    else:
+        print(f"Requested render passes available: {len(enabled)}; unavailable: {len(unavailable)}")
 
 
 if __name__ == "__main__":
