@@ -20,7 +20,8 @@ def test_remote_training_script_bootstraps_python_and_cuda_torch():
     assert "download.pytorch.org/whl/cu128" in script
     assert "torch.cuda.is_available()" in script
     assert script.index("apt-get install") < script.index("python -c")
-    assert "python - <<'PY'" not in script
+    # The remaining heredoc is intentional: it validates metrics after training.
+    assert script.index("python - <<'PY'") > script.index("training/train_translator.py")
 
 
 def test_deepseek_agent_redacts_api_tokens():
