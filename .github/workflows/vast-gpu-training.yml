@@ -1,0 +1,90 @@
+name: NEO FastFrame - Vast GPU Training
+
+on:
+  workflow_dispatch:
+    inputs:
+      budget_usd:
+        description: "Maximum total rental budget in USD, including 25% reserve"
+        required: true
+        type: string
+      max_hourly_usd:
+        description: "Maximum Vast.ai hourly price in USD"
+        required: true
+        type: string
+      max_hours:
+        description: "Maximum rental duration (0.25 to 3.0 hours)"
+        required: true
+        type: string
+      epochs:
+        description: "Maximum epochs; early stopping enabled"
+        required: true
+        default: "80"
+        type: string
+      samples:
+        description: "Generated synthetic training samples"
+        required: true
+        default: "12000"
+        type: string
+      gpu_order:
+        description: "GPU preference order"
+        required: true
+        default: "RTX 3090,RTX 4090"
+        type: choice
+        options:
+          - "RTX 3090,RTX 4090"
+          - "RTX 4090,RTX 3090"
+          - "RTX 3090"
+          - "RTX 4090"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: neo-fastframe-vast-training
+  cancel-in-progress: false
+
+jobs:
+  rent-train-collect-destroy:
+    name: Rent GPU, train, collect checkpoints, destroy rental
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Vast control dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests vastai
+
+      - name: Provision Vast GPU and train NEO
+        env:
+          VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+          NEO_BUDGET_USD: ${{ inputs.budget_usd }}
+          NEO_MAX_HOURLY_USD: ${{ inputs.max_hourly_usd }}
+          NEO_MAX_HOURS: ${{ inputs.max_hours }}
+          NEO_EPOCHS: ${{ inputs.epochs }}
+          NEO_SAMPLES: ${{ inputs.samples }}
+          NEO_GPU_ORDER: ${{ inputs.gpu_order }}
+        run: |
+          python scripts/run_vast_gpu_training.py \
+            --budget-usd "$NEO_BUDGET_USD" \
+            --max-hourly-usd "$NEO_MAX_HOURLY_USD" \
+            --max-hours "$NEO_MAX_HOURS" \
+            --epochs "$NEO_EPOCHS" \
+            --samples "$NEO_SAMPLES" \
+            --gpu-order "$NEO_GPU_ORDER"
+
+      - name: Upload GPU training outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: neo-fastframe-vast-gpu-training
+          path: vast-training-output/
+          if-no-files-found: warn
+          retention-days: 30
