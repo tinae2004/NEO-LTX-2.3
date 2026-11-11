@@ -2,7 +2,7 @@ import json
 
 import numpy as np
 
-from scripts.build_dataset_from_blender import BONE_FOR_JOINT, build_dataset
+from neo_video_gen.dataset.blender_pairs import BONE_FOR_JOINT, build_dataset
 
 
 def write_state(path, frame, offset):
