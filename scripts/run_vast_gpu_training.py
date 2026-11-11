@@ -145,7 +145,7 @@ import json
 from pathlib import Path
 m=json.loads(Path('artifacts/neo_fastframe_motion.metrics.json').read_text())
 assert m['epochs_completed']>=1 and m['best_epoch']>=1 and m['train_samples']>100
-print(json.dumps({k:m[k] for k in ('device','epochs_requested','epochs_completed','best_epoch','best_validation_score','train_samples','validation_samples','elapsed_seconds','model_scope')},indent=2))
+print(json.dumps({{k:m[k] for k in ('device','epochs_requested','epochs_completed','best_epoch','best_validation_score','train_samples','validation_samples','elapsed_seconds','model_scope')}},indent=2))
 PY
 nvidia-smi
 """
