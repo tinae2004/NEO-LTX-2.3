@@ -112,6 +112,10 @@ jobs:
               assert len(val["action_id"]) > 0
           print("Blender scene-state/geometry to training-dataset smoke test passed")
           PY
+      - name: Train skeleton-control baseline on Blender-generated pairs (CPU smoke)
+        run: |
+          pip install -e ".[train]"
+          python training/train_translator.py --data /tmp/neo_blender_dataset --epochs 5 --batch-size 4 --device cpu --output /tmp/neo_blender_translator.pt
       - name: Upload Blender-generated training dataset
         uses: actions/upload-artifact@v4
         with:
@@ -121,5 +125,7 @@ jobs:
             /tmp/neo_blender_dataset/val.npz
             /tmp/neo_blender_dataset/dataset_metadata.json
             /tmp/neo_capture/head_turn/manifest.json
+            /tmp/neo_blender_translator.pt
+            /tmp/neo_blender_translator.metrics.json
           if-no-files-found: error
           retention-days: 14
