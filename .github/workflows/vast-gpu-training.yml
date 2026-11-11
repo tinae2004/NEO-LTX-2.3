@@ -7,14 +7,17 @@ on:
         description: "Maximum total rental budget in USD, including 25% reserve"
         required: true
         type: string
+        default: "3"
       max_hourly_usd:
         description: "Maximum Vast.ai hourly price in USD"
         required: true
         type: string
+        default: "0.30"
       max_hours:
         description: "Maximum rental duration (0.25 to 3.0 hours)"
         required: true
         type: string
+        default: "0.3"
       epochs:
         description: "Maximum epochs; early stopping enabled"
         required: true
@@ -62,6 +65,44 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install Blender runtime dependencies on free runner
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl xz-utils ca-certificates xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libgbm1 libsm6 libxext6 libxrender1 libxfixes3 libxi6 libxkbcommon0 libdbus-1-3 libfontconfig1
+
+      - name: Install pinned Blender on free runner
+        env:
+          BLENDER_VERSION: "4.5.16"
+        run: |
+          set -euo pipefail
+          ARCHIVE="blender-${BLENDER_VERSION}-linux-x64.tar.xz"
+          BASE_URL="https://download.blender.org/release/Blender4.5"
+          cd "$RUNNER_TEMP"
+          curl -fL --retry 3 --retry-delay 2 -o "$ARCHIVE" "$BASE_URL/$ARCHIVE"
+          tar -xf "$ARCHIVE"
+          echo "$RUNNER_TEMP/blender-${BLENDER_VERSION}-linux-x64" >> "$GITHUB_PATH"
+          xvfb-run -a env -u LD_LIBRARY_PATH LIBGL_ALWAYS_SOFTWARE=1 "$RUNNER_TEMP/blender-${BLENDER_VERSION}-linux-x64/blender" --background --python-expr "import bpy; print('Blender:', bpy.app.version_string)"
+
+      - name: Build synthetic and Blender training data before GPU rental
+        env:
+          NEO_SAMPLES: ${{ inputs.samples || '12000' }}
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          mkdir -p vast-training-input data/captures
+          python scripts/generate_synthetic_dataset.py --samples "$NEO_SAMPLES" --size 64 --seed 20261111 --output vast-training-input/synthetic_v1
+          blender --background --python scripts/create_blender_demo_scene.py -- --output data/neo_demo_scene.blend --renderer EEVEE
+          blender --background data/neo_demo_scene.blend --python scripts/blender_capture.py -- --output data/captures/head_turn --start 1 --end 9 --profile FULL --skip-render
+          python scripts/build_dataset_from_blender.py --capture data/captures/head_turn --output vast-training-input/blender_head_turn --action-id 0
+          blender --background data/neo_demo_scene.blend --python scripts/blender_capture.py -- --output data/captures/left_arm_raise --start 10 --end 18 --profile FULL --skip-render
+          python scripts/build_dataset_from_blender.py --capture data/captures/left_arm_raise --output vast-training-input/blender_left_arm --action-id 1
+          blender --background data/neo_demo_scene.blend --python scripts/blender_capture.py -- --output data/captures/walk_step --start 19 --end 27 --profile FULL --skip-render
+          python scripts/build_dataset_from_blender.py --capture data/captures/walk_step --output vast-training-input/blender_walk --action-id 4
+          python scripts/merge_datasets.py --inputs vast-training-input/synthetic_v1 vast-training-input/blender_head_turn vast-training-input/blender_left_arm vast-training-input/blender_walk --output vast-training-input/combined_v1
+          test -s vast-training-input/combined_v1/train.npz
+          test -s vast-training-input/combined_v1/val.npz
+
       - name: Install Vast control dependencies
         run: |
           python -m pip install --upgrade pip
@@ -71,7 +112,7 @@ jobs:
         env:
           VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          NEO_BUDGET_USD: ${{ inputs.budget_usd || '5' }}
+          NEO_BUDGET_USD: ${{ inputs.budget_usd || '3' }}
           NEO_MAX_HOURLY_USD: ${{ inputs.max_hourly_usd || '0.30' }}
           NEO_MAX_HOURS: ${{ inputs.max_hours || '0.3' }}
           NEO_EPOCHS: ${{ inputs.epochs || '80' }}
