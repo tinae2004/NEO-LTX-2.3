@@ -8,7 +8,7 @@ def test_translator_forward_shapes():
     model = MotionTranslator()
     output = model(
         torch.randn(2, 2, 17, 3),
-        torch.eye(4).reshape(1, 4, 4).repeat(2, 1, 1),
+        torch.eye(4).reshape(1, 1, 4, 4).repeat(2, 2, 1, 1),
         torch.tensor([0, 3]),
     )
     assert output["flow"].shape == (2, 2, 64, 64)

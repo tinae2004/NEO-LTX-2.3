@@ -1,4 +1,4 @@
-"""NEO VIDEO GEN dashboard; not a renderer."""
+"""NEO VIDEO GEN research dashboard; this is not a renderer."""
 from __future__ import annotations
 
 import json
@@ -13,6 +13,8 @@ from neo_video_gen.dataset.validate import validate_manifest
 README = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
 ROADMAP = (PROJECT_ROOT / "docs" / "ROADMAP.md").read_text(encoding="utf-8")
 CAPTURE_GUIDE = (PROJECT_ROOT / "docs" / "DATA_CAPTURE.md").read_text(encoding="utf-8")
+BLENDER_GUIDE = (PROJECT_ROOT / "docs" / "BLENDER_QUICKSTART.md").read_text(encoding="utf-8")
+TRAINING_GUIDE = (PROJECT_ROOT / "docs" / "TRAINING.md").read_text(encoding="utf-8")
 
 
 def inspect_dataset(path_text: str) -> tuple[str, str]:
@@ -43,10 +45,14 @@ with gr.Blocks(title="NEO VIDEO GEN", theme=gr.themes.Soft()) as demo:
         gr.Markdown("### Motion Translator\nLearn 3D-to-2D spatial control.")
     with gr.Tab("Project"):
         gr.Markdown(README)
-    with gr.Tab("Roadmap"):
-        gr.Markdown(ROADMAP)
+    with gr.Tab("Blender quick start"):
+        gr.Markdown(BLENDER_GUIDE)
     with gr.Tab("Capture specification"):
         gr.Markdown(CAPTURE_GUIDE)
+    with gr.Tab("Training guide"):
+        gr.Markdown(TRAINING_GUIDE)
+    with gr.Tab("Roadmap"):
+        gr.Markdown(ROADMAP)
     with gr.Tab("Dataset inspector"):
         path_box = gr.Textbox(label="Dataset folder or manifest", value="./neo_data")
         inspect_btn = gr.Button("Inspect manifests", variant="primary")

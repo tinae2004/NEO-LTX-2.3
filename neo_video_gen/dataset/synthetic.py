@@ -6,20 +6,15 @@ from pathlib import Path
 import numpy as np
 
 ACTION_NAMES = (
-    "head_turn",
-    "left_arm_raise",
-    "right_arm_raise",
-    "torso_twist",
-    "walk_step",
-    "camera_dolly",
+    "head_turn", "left_arm_raise", "right_arm_raise",
+    "torso_twist", "walk_step", "camera_dolly",
 )
 JOINT_NAMES = (
     "pelvis", "spine", "neck", "head",
     "left_shoulder", "left_elbow", "left_wrist",
     "right_shoulder", "right_elbow", "right_wrist",
     "left_hip", "left_knee", "left_ankle",
-    "right_hip", "right_knee", "right_ankle",
-    "nose",
+    "right_hip", "right_knee", "right_ankle", "nose",
 )
 
 
@@ -41,42 +36,38 @@ def _base_skeleton(rng: np.random.Generator) -> np.ndarray:
 def _apply_action(source: np.ndarray, action: int, rng: np.random.Generator) -> np.ndarray:
     target = source.copy()
     amount = float(rng.uniform(0.18, 0.65))
-    if action == 0:  # head turn: head/neck/nose shift in depth and horizontal position
+    if action == 0:
         target[[2, 3, 16], 0] += amount * np.array([0.15, 0.35, 0.55])
         target[[2, 3, 16], 2] -= amount * np.array([0.10, 0.20, 0.12])
-    elif action == 1:  # left arm raise
+    elif action == 1:
         target[[5, 6], 1] += amount * np.array([0.45, 0.95])
         target[[5, 6], 0] -= amount * np.array([0.12, 0.20])
-    elif action == 2:  # right arm raise
+    elif action == 2:
         target[[8, 9], 1] += amount * np.array([0.45, 0.95])
         target[[8, 9], 0] += amount * np.array([0.12, 0.20])
-    elif action == 3:  # torso twist
-        target[[1, 2, 3, 4, 5, 6, 7, 8, 9], 0] += (
-            amount * np.array([0.05, 0.10, 0.12, 0.13, -0.12, -0.22, 0.12, 0.22, 0.28])
+    elif action == 3:
+        target[[1, 2, 3, 4, 5, 6, 7, 8, 9], 0] += amount * np.array(
+            [0.05, 0.10, 0.12, 0.13, -0.12, -0.22, 0.12, 0.22, 0.28]
         )
-    elif action == 4:  # walking step
+    elif action == 4:
         target[[10, 11, 12], 0] += amount * np.array([-0.25, -0.65, -0.85])
         target[[13, 14, 15], 0] += amount * np.array([0.25, 0.65, 0.85])
         target[[5, 6], 0] += amount * np.array([0.10, 0.25])
         target[[8, 9], 0] -= amount * np.array([0.10, 0.25])
         target[:, 1] += rng.uniform(-0.04, 0.04)
-    elif action == 5:  # camera dolly represented as coordinated depth change
-        target[:, 2] += amount * 0.8
-        target[:, 0] *= 1.0 + amount * 0.04
-        target[:, 1] *= 1.0 + amount * 0.04
+    elif action == 5:
+        target[:, 2] -= amount * 0.8
     target += rng.normal(0.0, 0.008, size=target.shape).astype(np.float32)
     return target
 
 
 def _camera_matrix(rng: np.random.Generator) -> np.ndarray:
     focal = float(rng.uniform(0.36, 0.58))
-    cx = float(rng.uniform(0.46, 0.54))
-    cy = float(rng.uniform(0.44, 0.56))
     matrix = np.eye(4, dtype=np.float32)
     matrix[0, 0] = focal
-    matrix[0, 2] = cx
+    matrix[0, 2] = float(rng.uniform(0.46, 0.54))
     matrix[1, 1] = -focal
-    matrix[1, 2] = cy
+    matrix[1, 2] = float(rng.uniform(0.44, 0.56))
     return matrix
 
 
@@ -93,11 +84,12 @@ def project_camera(points: np.ndarray, matrix: np.ndarray) -> tuple[np.ndarray, 
     return uv, visible
 
 
-def _control_targets(
-    source: np.ndarray, target: np.ndarray, matrix: np.ndarray, size: int, sigma_px: float = 2.2
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    source_uv, source_visible = project_camera(source, matrix)
-    target_uv, target_visible = project_camera(target, matrix)
+def build_control_targets(source: np.ndarray, target: np.ndarray, source_camera: np.ndarray,
+                          target_camera: np.ndarray, size: int = 64,
+                          sigma_px: float = 2.2):
+    """Create sparse Gaussian control fields around projected 3D joints."""
+    source_uv, source_visible = project_camera(source, source_camera)
+    target_uv, target_visible = project_camera(target, target_camera)
     yy, xx = np.mgrid[0:size, 0:size].astype(np.float32)
     flow_sum = np.zeros((2, size, size), dtype=np.float32)
     depth_sum = np.zeros((1, size, size), dtype=np.float32)
@@ -118,16 +110,10 @@ def _control_targets(
         flow_sum[1] += gaussian * delta[1]
         depth_sum[0] += gaussian * (target[index, 2] - source[index, 2])
     denominator = np.maximum(weight_sum, 1e-6)
-    flow = flow_sum / denominator
-    depth_delta = depth_sum / denominator
-    return flow, visibility, depth_delta
+    return flow_sum / denominator, visibility, depth_sum / denominator
 
 
-def generate_arrays(
-    sample_count: int = 512,
-    image_size: int = 64,
-    seed: int = 7,
-) -> dict[str, np.ndarray]:
+def generate_arrays(sample_count: int = 512, image_size: int = 64, seed: int = 7):
     if sample_count < 2:
         raise ValueError("sample_count must be at least 2")
     if image_size < 16 or image_size % 8:
@@ -138,10 +124,16 @@ def generate_arrays(
         source = _base_skeleton(rng)
         action = int(rng.integers(0, len(ACTION_NAMES)))
         target = _apply_action(source, action, rng)
-        camera = _camera_matrix(rng)
-        flow, visible, depth_delta = _control_targets(source, target, camera, image_size)
+        source_camera = _camera_matrix(rng)
+        target_camera = source_camera.copy()
+        if action == 5:
+            target_camera[0, 0] *= float(rng.uniform(0.92, 1.08))
+            target_camera[1, 1] *= target_camera[0, 0] / source_camera[0, 0]
+        flow, visible, depth_delta = build_control_targets(
+            source, target, source_camera, target_camera, image_size
+        )
         joints.append(np.stack([source, target]))
-        cameras.append(camera)
+        cameras.append(np.stack([source_camera, target_camera]))
         actions.append(action)
         flows.append(flow)
         visibility.append(visible)
@@ -157,7 +149,7 @@ def generate_arrays(
 
 
 def save_dataset(output: str | Path, sample_count: int = 1024, validation_fraction: float = 0.2,
-                 image_size: int = 64, seed: int = 7) -> tuple[Path, Path]:
+                 image_size: int = 64, seed: int = 7):
     if not 0.05 <= validation_fraction <= 0.5:
         raise ValueError("validation_fraction must be between 0.05 and 0.5")
     arrays = generate_arrays(sample_count, image_size, seed)

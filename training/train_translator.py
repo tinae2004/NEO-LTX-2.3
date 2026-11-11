@@ -29,10 +29,10 @@ class MotionSamples(Dataset):
         )):
             raise ValueError("Dataset arrays have inconsistent sample counts")
 
-    def __len__(self) -> int:
+    def __len__(self):
         return len(self.joints)
 
-    def __getitem__(self, index: int):
+    def __getitem__(self, index):
         return (
             torch.from_numpy(self.joints[index]),
             torch.from_numpy(self.camera[index]),
@@ -63,9 +63,9 @@ def evaluate(model, loader, device):
     return {key: value / max(1, batches) for key, value in totals.items()}
 
 
-def main() -> None:
+def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data", type=Path, required=True, help="Directory containing train.npz and val.npz")
+    parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--output", type=Path, default=Path("runs/neo_motion_translator.pt"))
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=16)
@@ -73,7 +73,6 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=0)
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     args = parser.parse_args()
-
     if args.epochs < 1:
         raise ValueError("--epochs must be >= 1")
     if args.device == "cuda" and not torch.cuda.is_available():
@@ -94,7 +93,6 @@ def main() -> None:
     model = MotionTranslator().to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
     history = []
-
     for epoch in range(args.epochs):
         model.train()
         total = 0.0
@@ -114,29 +112,24 @@ def main() -> None:
             optimizer.step()
             total += float(loss.detach())
         metrics = evaluate(model, val_loader, device)
-        record = {
-            "epoch": epoch + 1,
-            "train_loss": total / max(1, len(train_loader)),
-            **metrics,
-        }
+        record = {"epoch": epoch + 1, "train_loss": total / max(1, len(train_loader)), **metrics}
         history.append(record)
         print(json.dumps(record))
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     torch.save({
         "model_state_dict": model.state_dict(),
-        "config": {"joint_count": 17, "camera_dim": 16, "action_count": 6, "output_size": 64},
+        "config": {"joint_count": 17, "camera_dim": 32, "action_count": 6, "output_size": 64},
         "history": history,
         "training_data": str(args.data.resolve()),
         "device": str(device),
-        "note": "Synthetic skeleton-motion control baseline; not a FLUX adapter.",
+        "note": "Synthetic/skeleton-motion control baseline; not a FLUX adapter.",
     }, args.output)
-    metrics_path = args.output.with_suffix(".metrics.json")
-    metrics_path.write_text(json.dumps({
+    args.output.with_suffix(".metrics.json").write_text(json.dumps({
         "device": str(device), "epochs": args.epochs, "history": history,
     }, indent=2), encoding="utf-8")
     print(f"Checkpoint: {args.output}")
-    print(f"Metrics: {metrics_path}")
+    print(f"Metrics: {args.output.with_suffix('.metrics.json')}")
 
 
 if __name__ == "__main__":

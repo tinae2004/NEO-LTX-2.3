@@ -1,16 +1,19 @@
-"""Blender animation capture for NEO VIDEO GEN.
+"""Capture Blender render passes, evaluated geometry and per-frame scene state.
 
-Example:
+Run:
 blender --background scene.blend --python scripts/blender_capture.py -- --output ./neo_data/scene_001 --start 1 --end 9 --profile FULL
 """
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
+from typing import Any
 
 import bpy
+import numpy as np
 from mathutils import Vector
 
 PASS_FLAGS = {
@@ -40,46 +43,152 @@ PASS_FLAGS = {
 }
 
 
-def as_list(value):
+def plain(value: Any) -> Any:
     if hasattr(value, "to_list"):
         return value.to_list()
-    try:
-        return [as_list(v) for v in value]
-    except TypeError:
+    if isinstance(value, (str, int, float, bool)) or value is None:
         return value
+    try:
+        return [plain(item) for item in value]
+    except TypeError:
+        return str(value)
 
 
-def matrix_rows(matrix):
+def matrix_rows(matrix) -> list[list[float]]:
     return [[float(value) for value in row] for row in matrix]
 
 
-def capture_object(obj):
-    item = {
+def safe_name(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("_")[:100] or "object"
+
+
+def capture_material(mat) -> dict[str, Any]:
+    result = {
+        "name": mat.name,
+        "diffuse_color": plain(mat.diffuse_color),
+        "roughness": getattr(mat, "roughness", None),
+        "metallic": getattr(mat, "metallic", None),
+        "blend_method": getattr(mat, "surface_render_method", None),
+    }
+    if mat.use_nodes and mat.node_tree:
+        result["nodes"] = [
+            {"name": node.name, "type": node.bl_idname}
+            for node in mat.node_tree.nodes
+        ]
+        principled = next(
+            (node for node in mat.node_tree.nodes if node.bl_idname == "ShaderNodeBsdfPrincipled"),
+            None,
+        )
+        if principled:
+            for socket_name in ("Base Color", "Metallic", "Roughness", "Alpha", "IOR"):
+                socket = principled.inputs.get(socket_name)
+                if socket and socket.is_linked is False:
+                    result[socket_name.lower().replace(" ", "_")] = plain(socket.default_value)
+    return result
+
+
+def export_evaluated_mesh(obj, geometry_dir: Path, frame_stem: str) -> dict[str, Any]:
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    evaluated = obj.evaluated_get(depsgraph)
+    mesh = evaluated.to_mesh(preserve_all_data_layers=True, depsgraph=depsgraph)
+    try:
+        vertices_local = np.asarray([tuple(v.co) for v in mesh.vertices], dtype=np.float32)
+        vertices_world = np.asarray(
+            [tuple(evaluated.matrix_world @ v.co) for v in mesh.vertices], dtype=np.float32
+        )
+        normal_matrix = evaluated.matrix_world.to_3x3().inverted().transposed()
+        normals_world = []
+        for vertex in mesh.vertices:
+            normal = normal_matrix @ vertex.normal
+            if normal.length:
+                normal.normalize()
+            normals_world.append(tuple(normal))
+        normals_world = np.asarray(normals_world, dtype=np.float32)
+        face_offsets = [0]
+        face_indices = []
+        face_materials = []
+        face_normals = []
+        for polygon in mesh.polygons:
+            face_indices.extend(int(index) for index in polygon.vertices)
+            face_offsets.append(len(face_indices))
+            face_materials.append(int(polygon.material_index))
+            face_normals.append(tuple(polygon.normal))
+        edge_indices = np.asarray([tuple(edge.vertices) for edge in mesh.edges], dtype=np.int32)
+        if edge_indices.size == 0:
+            edge_indices = np.empty((0, 2), dtype=np.int32)
+        uv_layer = mesh.uv_layers.active
+        uv_values = (
+            np.asarray([tuple(loop.uv) for loop in uv_layer.data], dtype=np.float32)
+            if uv_layer else np.empty((0, 2), dtype=np.float32)
+        )
+        target = geometry_dir / f"{frame_stem}_{safe_name(obj.name)}.npz"
+        np.savez_compressed(
+            target,
+            vertices_local=vertices_local,
+            vertices_world=vertices_world,
+            vertex_normals_world=normals_world,
+            edges=edge_indices,
+            face_offsets=np.asarray(face_offsets, dtype=np.int64),
+            face_vertex_indices=np.asarray(face_indices, dtype=np.int32),
+            face_material_indices=np.asarray(face_materials, dtype=np.int32),
+            face_normals=np.asarray(face_normals, dtype=np.float32),
+            loop_uvs=uv_values,
+            world_matrix=np.asarray(matrix_rows(evaluated.matrix_world), dtype=np.float32),
+        )
+        return {
+            "file": str(target),
+            "vertices": len(mesh.vertices),
+            "edges": len(mesh.edges),
+            "polygons": len(mesh.polygons),
+            "has_uv": bool(uv_layer),
+        }
+    finally:
+        evaluated.to_mesh_clear()
+
+
+def capture_object(obj, geometry_dir: Path, frame_stem: str) -> dict[str, Any]:
+    item: dict[str, Any] = {
         "name": obj.name,
         "type": obj.type,
         "data_name": getattr(obj.data, "name", None),
         "world_matrix": matrix_rows(obj.matrix_world),
-        "location": as_list(obj.matrix_world.translation),
-        "rotation": as_list(obj.matrix_world.to_euler()),
-        "scale": as_list(obj.matrix_world.to_scale()),
-        "dimensions": as_list(obj.dimensions),
+        "location": plain(obj.matrix_world.translation),
+        "rotation": plain(obj.matrix_world.to_euler()),
+        "scale": plain(obj.matrix_world.to_scale()),
+        "dimensions": plain(obj.dimensions),
         "parent": obj.parent.name if obj.parent else None,
-        "materials": [slot.material.name if slot.material else None for slot in obj.material_slots],
+        "parent_bone": getattr(obj, "parent_bone", None),
+        "materials": [
+            capture_material(slot.material) if slot.material else None
+            for slot in obj.material_slots
+        ],
+        "modifiers": [
+            {
+                "name": modifier.name,
+                "type": modifier.type,
+                "show_viewport": modifier.show_viewport,
+                "show_render": modifier.show_render,
+            }
+            for modifier in obj.modifiers
+        ],
     }
     if obj.type == "MESH":
+        item["evaluated_geometry"] = export_evaluated_mesh(obj, geometry_dir, frame_stem)
         item["mesh"] = {
             "vertices": len(obj.data.vertices),
             "edges": len(obj.data.edges),
             "polygons": len(obj.data.polygons),
-            "bounds_world": [as_list(obj.matrix_world @ Vector(corner)) for corner in obj.bound_box],
+            "bounds_world": [
+                plain(obj.matrix_world @ Vector(corner)) for corner in obj.bound_box
+            ],
         }
     if obj.type == "ARMATURE":
         item["bones"] = [
             {
                 "name": bone.name,
                 "parent": bone.parent.name if bone.parent else None,
-                "head_world": as_list(obj.matrix_world @ bone.head_local),
-                "tail_world": as_list(obj.matrix_world @ bone.tail_local),
+                "head_world": plain(obj.matrix_world @ bone.head_local),
+                "tail_world": plain(obj.matrix_world @ bone.tail_local),
             }
             for bone in obj.data.bones
         ]
@@ -87,7 +196,12 @@ def capture_object(obj):
             {
                 "name": bone.name,
                 "matrix_world": matrix_rows(obj.matrix_world @ bone.matrix),
-                "rotation_quaternion": as_list(bone.rotation_quaternion),
+                "head_world": plain(obj.matrix_world @ bone.head),
+                "tail_world": plain(obj.matrix_world @ bone.tail),
+                "rotation_quaternion": plain(bone.rotation_quaternion),
+                "rotation_euler": plain(bone.rotation_euler),
+                "location": plain(bone.location),
+                "scale": plain(bone.scale),
             }
             for bone in obj.pose.bones
         ]
@@ -111,6 +225,27 @@ def capture_object(obj):
                 scale_y=bpy.context.scene.render.pixel_aspect_y,
             )),
         }
+    if obj.type == "LIGHT":
+        item["light"] = {
+            "type": obj.data.type,
+            "energy": obj.data.energy,
+            "color": plain(obj.data.color),
+            "shape": getattr(obj.data, "shape", None),
+            "size": getattr(obj.data, "size", None),
+            "size_y": getattr(obj.data, "size_y", None),
+            "use_nodes": getattr(obj.data, "use_nodes", None),
+        }
+    if obj.particle_systems:
+        item["particle_systems"] = [
+            {
+                "name": system.name,
+                "type": system.settings.type,
+                "count": system.settings.count,
+                "frame_start": system.settings.frame_start,
+                "frame_end": system.settings.frame_end,
+            }
+            for system in obj.particle_systems
+        ]
     return item
 
 
@@ -141,9 +276,13 @@ def main():
     scene = bpy.context.scene
     start = args.start if args.start is not None else scene.frame_start
     end = args.end if args.end is not None else scene.frame_end
+    if end < start:
+        raise ValueError("end frame must be greater than or equal to start frame")
     output = Path(args.output).expanduser().resolve()
     frames_dir = output / "frames"
+    geometry_dir = output / "geometry"
     frames_dir.mkdir(parents=True, exist_ok=True)
+    geometry_dir.mkdir(parents=True, exist_ok=True)
     enabled, unavailable = enable_passes(bpy.context.view_layer)
 
     scene.render.image_settings.file_format = "OPEN_EXR_MULTILAYER"
@@ -169,37 +308,70 @@ def main():
         },
         "frames": [],
         "assets": [],
-        "available_channels": enabled,
+        "available_channels": enabled + ["evaluated_mesh_geometry", "scene_state_json"],
         "unavailable_channels": unavailable,
-        "notes": ["Pass availability depends on Blender version and render engine."],
+        "notes": [
+            "Multilayer EXR contains enabled passes supported by this Blender version and render engine.",
+            "Evaluated mesh arrays are saved per object and frame in geometry/.",
+            "Unsupported channels are explicitly listed; custom AOVs require scene-specific shader setup.",
+        ],
     }
 
     for frame in range(start, end + 1):
         scene.frame_set(frame)
+        bpy.context.view_layer.update()
         stem = f"frame_{frame:06d}"
         scene.render.filepath = str(frames_dir / stem)
         bpy.ops.render.render(write_still=True)
+
+        objects = []
+        geometry_failures = []
+        for obj in scene.objects:
+            try:
+                objects.append(capture_object(obj, geometry_dir, stem))
+            except Exception as exc:
+                geometry_failures.append({"object": obj.name, "error": str(exc)})
+                objects.append({
+                    "name": obj.name, "type": obj.type,
+                    "world_matrix": matrix_rows(obj.matrix_world),
+                    "geometry_export_error": str(exc),
+                })
+
         timestamp = (frame - scene.frame_start) / fps
         state = {
             "frame_index": frame,
             "timestamp_seconds": timestamp,
             "camera": scene.camera.name if scene.camera else None,
-            "objects": [capture_object(obj) for obj in scene.objects],
-            "world": {"name": scene.world.name if scene.world else None} if scene.world else None,
+            "objects": objects,
+            "world": {
+                "name": scene.world.name if scene.world else None,
+                "color": plain(scene.world.color) if scene.world else None,
+            } if scene.world else None,
+            "render": {
+                "engine": scene.render.engine,
+                "resolution": [scene.render.resolution_x, scene.render.resolution_y],
+                "fps": fps,
+            },
+            "geometry_export_failures": geometry_failures,
         }
         state_file = frames_dir / f"{stem}.json"
         state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
         manifest["frames"].append({
             "frame_index": frame,
             "timestamp_seconds": timestamp,
-            "passes": {"multilayer_exr": f"frames/{stem}.exr"},
+            "passes": {
+                "multilayer_exr": f"frames/{stem}.exr",
+                "evaluated_geometry_dir": "geometry/",
+            },
             "state_file": f"frames/{stem}.json",
-            "available_channels": enabled,
+            "available_channels": manifest["available_channels"],
             "unavailable_channels": unavailable,
+            "geometry_export_failures": geometry_failures,
         })
 
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    print(f"NEO capture finished: {output}")
+    print(f"NEO FULL capture finished: {output}")
+    print(f"Requested render passes available: {len(enabled)}; unavailable: {len(unavailable)}")
 
 
 if __name__ == "__main__":

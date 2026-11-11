@@ -6,7 +6,7 @@ from neo_video_gen.dataset.synthetic import ACTION_NAMES, generate_arrays, save_
 def test_synthetic_dataset_shapes():
     data = generate_arrays(sample_count=12, image_size=32, seed=11)
     assert data["joints_3d"].shape == (12, 2, 17, 3)
-    assert data["camera"].shape == (12, 4, 4)
+    assert data["camera"].shape == (12, 2, 4, 4)
     assert data["action_id"].shape == (12,)
     assert data["target_flow"].shape == (12, 2, 32, 32)
     assert data["target_visibility"].shape == (12, 1, 32, 32)
