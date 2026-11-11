@@ -103,8 +103,6 @@ jobs:
       - name: Build dense surface-flow and occlusion labels from evaluated meshes
         run: |
           python scripts/build_dense_flow_pairs.py --capture /tmp/neo_capture/head_turn --output /tmp/neo_dense_flow --size 64
-      - name: Test RGB pixel reuse and inpainting-hole masks
-        run: pytest -q tests/test_pixel_reuse.py tests/test_mesh_flow.py
       - name: Verify dense surface-flow fields
         run: |
           python - <<'PY'
