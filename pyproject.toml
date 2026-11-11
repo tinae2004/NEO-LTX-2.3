@@ -15,7 +15,7 @@ train = ["torch>=2.3", "tqdm>=4.66"]
 dev = ["pytest>=8", "ruff>=0.5"]
 
 [tool.setuptools.packages.find]
-include = ["neo_video_gen*"]
+include = ["neo_video_gen*", "scripts*"]
 
 [tool.ruff]
 line-length = 100
