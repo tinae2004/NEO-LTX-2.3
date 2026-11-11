@@ -98,7 +98,7 @@ print('VRAM_GB:',round(torch.cuda.get_device_properties(0).total_memory/1024**3,
 PY
 echo '=== Install Blender and project dependencies ==='
 apt-get update
-apt-get install -y --no-install-recommends curl xz-utils ca-certificates libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libgbm1 libsm6 libxext6 libxrender1 libxfixes3 libxi6 libxkbcommon0 libdbus-1-3 libfontconfig1
+apt-get install -y --no-install-recommends curl xz-utils ca-certificates python3 python3-pip python-is-python3 libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libgbm1 libsm6 libxext6 libxrender1 libxfixes3 libxi6 libxkbcommon0 libdbus-1-3 libfontconfig1
 BLENDER_ARCHIVE="blender-{BLENDER_VERSION}-linux-x64.tar.xz"
 if [ ! -x "/opt/blender-{BLENDER_VERSION}-linux-x64/blender" ]; then
   curl -fL --retry 3 --retry-delay 2 -o "/tmp/$BLENDER_ARCHIVE" "https://download.blender.org/release/Blender4.5/$BLENDER_ARCHIVE"
@@ -106,7 +106,14 @@ if [ ! -x "/opt/blender-{BLENDER_VERSION}-linux-x64/blender" ]; then
 fi
 export PATH="/opt/blender-{BLENDER_VERSION}-linux-x64:$PATH"
 blender --background --python-expr "import bpy; print('Blender:',bpy.app.version_string)"
+command -v python
+python --version
 python -m pip install --upgrade pip
+if ! python -c "import torch; assert torch.cuda.is_available()" >/dev/null 2>&1; then
+  echo 'CUDA PyTorch not ready; installing CUDA 12.8 wheels'
+  python -m pip install --index-url https://download.pytorch.org/whl/cu128 torch torchvision
+fi
+python -c "import torch; assert torch.cuda.is_available(), 'CUDA PyTorch is not available'; print('CUDA PyTorch ready:', torch.__version__, torch.version.cuda)"
 python -m pip install -e '.[train,dev]'
 
 echo '=== Generate synthetic supervision ==='
@@ -149,6 +156,15 @@ print(json.dumps({{k:m[k] for k in ('device','epochs_requested','epochs_complete
 PY
 nvidia-smi
 """
+
+def run_deepseek_advisor(error, context=""):
+    print("=== Requesting DeepSeek failure analysis ===", flush=True)
+    command=[sys.executable, "scripts/deepseek_agent.py", "--error", str(error),
+             "--context", context]
+    try:
+        subprocess.run(command, env=os.environ.copy(), text=True, timeout=50, check=False)
+    except Exception as exc:
+        print(f"DeepSeek advisor launch failed: {exc}", file=sys.stderr, flush=True)
 
 def main():
     p=argparse.ArgumentParser()
@@ -292,7 +308,17 @@ def main():
             "training_error":str(training_error) if training_error else None}
         (a.output/"vast_run_info.json").write_text(json.dumps(info,indent=2),encoding="utf-8")
         print(json.dumps(info,indent=2),flush=True)
-        if training_error: raise training_error
+        if training_error:
+            run_deepseek_advisor(
+                training_error,
+                "Vast image: vastai/pytorch. The previous observed failure was "
+                "'python: command not found' after NVIDIA-SMI detected an RTX 3090. "
+                "The current run installs python3/python-is-python3 and verifies "
+                "CUDA-enabled PyTorch before Blender capture and CUDA training. "
+                f"Budget cap USD {a.budget_usd}; hourly cap USD {a.max_hourly_usd}; "
+                f"runtime cap hours {a.max_hours}. Do not suggest exceeding these caps."
+            )
+            raise training_error
         if not (a.output/"artifacts/neo_fastframe_motion.pt").is_file():
             raise RuntimeError("Training ended without producing the best checkpoint.")
     finally:
