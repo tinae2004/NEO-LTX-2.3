@@ -19,6 +19,8 @@ def test_remote_training_script_bootstraps_python_and_cuda_torch():
     assert "python-is-python3" in script
     assert "download.pytorch.org/whl/cu128" in script
     assert "torch.cuda.is_available()" in script
+    assert script.index("apt-get install") < script.index("python -c")
+    assert "python - <<'PY'" not in script
 
 
 def test_deepseek_agent_redacts_api_tokens():
