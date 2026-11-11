@@ -19,8 +19,8 @@ MODEL = "deepseek-chat"
 
 
 def redact(value: str) -> str:
-    value = re.sub(r"(?i)(Bearer\\s+)[A-Za-z0-9._-]+", r"\\1[REDACTED]", value)
-    value = re.sub(r"(?i)(api[_-]?key\\s*[:=]\\s*)[^\\s,;]+", r"\\1[REDACTED]", value)
+    value = re.sub(r"(?i)(Bearer\s+)[A-Za-z0-9._-]+", r"\1[REDACTED]", value)
+    value = re.sub(r"(?i)(api[_-]?key\s*[:=]\s*)[^\s,;]+", r"\1[REDACTED]", value)
     value = re.sub(r"sk-[A-Za-z0-9_-]{12,}", "[REDACTED]", value)
     return value[-12000:]
 
@@ -44,8 +44,8 @@ def analyze_failure(error: str, context: str = "") -> str:
         "under 350 words."
     )
     user = (
-        "GPU workflow failure:\\n" + redact(error) +
-        ("\\n\\nRelevant context:\\n" + redact(context) if context else "")
+        "GPU workflow failure:\n" + redact(error) +
+        ("\n\nRelevant context:\n" + redact(context) if context else "")
     )
     response = requests.post(
         API_URL,
