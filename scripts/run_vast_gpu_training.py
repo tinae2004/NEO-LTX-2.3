@@ -19,7 +19,7 @@ class VastAPI:
         return response.json()
     def search(self,names):
         return self.request("POST","/bundles/",{
-            "gpu_name":{"in":names},"num_gpus":{"gte":1},"gpu_ram":{"gte":24000},
+            "gpu_name":{"in":names},"num_gpus":{"eq":1},"gpu_ram":{"gte":24000},
             "disk_space":{"gte":80},"reliability":{"gte":0.99},
             "verified":{"eq":True},"rentable":{"eq":True},"type":"ondemand","limit":20
         }).get("offers",[])
