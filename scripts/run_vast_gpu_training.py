@@ -78,6 +78,55 @@ def eligible_offers(offers,gpu_order,max_hourly,budget,max_hours):
     ranked.sort(key=lambda row:(row[0],row[1],row[2]))
     return [row[3] for row in ranked]
 
+def rent_with_refresh(api, gpu_names, gpu_order, max_hourly, budget, max_hours,
+                       disk_gb, label, max_searches=5, offers_per_search=8):
+    """Rent from fresh offer snapshots, excluding stale IDs and respecting all caps."""
+    excluded_ids=set()
+    attempts=0
+    last_error=None
+    for search_no in range(1,max_searches+1):
+        offers=api.search(gpu_names)
+        candidates=eligible_offers(offers,gpu_order,max_hourly,budget,max_hours)
+        candidates=[o for o in candidates if str(o.get("id")) not in excluded_ids]
+        print(f"Vast offer refresh {search_no}/{max_searches}: "
+              f"{len(offers)} returned, {len(candidates)} eligible after exclusions",flush=True)
+        if not candidates:
+            if search_no < max_searches:
+                time.sleep(min(2*search_no,8))
+                continue
+            break
+        refresh_now=False
+        for offer in candidates[:offers_per_search]:
+            offer_id=str(offer.get("id"))
+            if not offer_id or offer_id == "None":
+                continue
+            attempts += 1
+            rate=as_float(offer,"dph_total",as_float(offer,"dph"))
+            print(f"Attempting offer={offer_id} gpu={offer.get('gpu_name')} "
+                  f"rate_usd_per_hour={rate:.4f} reliability={offer.get('reliability')}",flush=True)
+            try:
+                response=api.create(int(offer_id),disk_gb,label)
+                contract=response.get("new_contract")
+                if contract is None:
+                    raise RuntimeError(f"No instance ID in Vast response: {response}")
+                return int(contract),offer
+            except Exception as exc:
+                last_error=exc
+                message=str(exc).lower()
+                print(f"Offer {offer_id} rental failed: {exc}",flush=True)
+                excluded_ids.add(offer_id)
+                if "no_such_ask" in message or "not available" in message or "404/3603" in message:
+                    # The snapshot is stale. Fetch a new offer list before the next attempt.
+                    refresh_now=True
+                    break
+        if search_no < max_searches:
+            time.sleep(min(2*search_no,8) if refresh_now else 1)
+    if last_error:
+        raise RuntimeError(f"No eligible offer could be rented after {attempts} attempts and "
+                           f"{max_searches} fresh searches. Last error: {last_error}") from last_error
+    raise RuntimeError(f"No eligible offer could be rented after {max_searches} fresh searches.")
+
+
 def remote_training_script(epochs,samples):
     return f"""#!/usr/bin/env bash
 set -euo pipefail
@@ -182,17 +231,10 @@ def main():
     if not shutil.which("ssh") or not shutil.which("ssh-keygen"): raise SystemExit("OpenSSH utilities are required.")
 
     api=VastAPI(key)
-    offers=api.search(["RTX 3090","RTX 4090"])
-    candidates=eligible_offers(offers,a.gpu_order,a.max_hourly_usd,a.budget_usd,a.max_hours)
-    print("Vast offers returned:",len(offers),flush=True)
-    for offer in candidates[:5]:
-        rate=as_float(offer,"dph_total",as_float(offer,"dph"))
-        reserve=rate*a.max_hours*1.25
-        print(f"Eligible offer={offer.get('id')} gpu={offer.get('gpu_name')} "
-              f"rate_usd_per_hour={rate:.4f} reliability={offer.get('reliability')} "
-              f"reserved_cost_estimate_usd={reserve:.2f}",flush=True)
-    if not candidates:
-        raise SystemExit("No verified >=99%-reliability RTX 3090/4090 fits the hourly and total budget caps. Nothing rented.")
+    # Offer IDs can expire between search and rental; rent_with_refresh re-searches safely.
+    print("GPU policy: verified on-demand RTX 3090/4090, >=24GB VRAM, >=99% reliability; "
+          f"hourly cap={a.max_hourly_usd:.2f}, total budget={a.budget_usd:.2f}, "
+          f"runtime cap={a.max_hours:.2f}h",flush=True)
 
     a.output.mkdir(parents=True,exist_ok=True)
     temp=Path(tempfile.mkdtemp(prefix="neo-vast-ssh-"))
@@ -206,16 +248,11 @@ def main():
         public_key=Path(str(key_path)+".pub").read_text(encoding="utf-8").strip()
         run_local(["vastai","create","ssh-key",public_key],env=env,timeout=60)
 
-        for offer in candidates[:5]:
-            try:
-                response=api.create(int(offer["id"]),a.disk_gb,
-                    f"NEO-FastFrame-Training-{os.environ.get('GITHUB_RUN_ID','manual')}")
-                contract=response.get("new_contract")
-                if contract is None: raise RuntimeError(f"No instance ID in Vast response: {response}")
-                instance_id=int(contract); selected=offer; break
-            except Exception as exc:
-                print(f"Offer {offer.get('id')} could not be rented; trying next: {exc}",flush=True)
-        if instance_id is None: raise RuntimeError("No eligible offer could be rented.")
+        instance_id,selected=rent_with_refresh(
+            api,["RTX 3090","RTX 4090"],a.gpu_order,a.max_hourly_usd,
+            a.budget_usd,a.max_hours,a.disk_gb,
+            f"NEO-FastFrame-Training-{os.environ.get('GITHUB_RUN_ID','manual')}",
+            max_searches=5,offers_per_search=8)
 
         print(f"Vast instance created: {instance_id}",flush=True)
         ready_until=min(deadline,time.monotonic()+20*60)
