@@ -35,6 +35,10 @@ on:
           - "RTX 4090,RTX 3090"
           - "RTX 3090"
           - "RTX 4090"
+  push:
+    branches: [neo-video-gen]
+    paths:
+      - ".github/neo-gpu-launch.once"
 
 permissions:
   contents: read
@@ -45,6 +49,7 @@ concurrency:
 
 jobs:
   rent-train-collect-destroy:
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.event.head_commit.message == 'LAUNCH NEO GPU TRAINING - ONCE') }}
     name: Rent GPU, train, collect checkpoints, destroy rental
     runs-on: ubuntu-latest
     timeout-minutes: 240
@@ -65,12 +70,12 @@ jobs:
       - name: Provision Vast GPU and train NEO
         env:
           VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
-          NEO_BUDGET_USD: ${{ inputs.budget_usd }}
-          NEO_MAX_HOURLY_USD: ${{ inputs.max_hourly_usd }}
-          NEO_MAX_HOURS: ${{ inputs.max_hours }}
-          NEO_EPOCHS: ${{ inputs.epochs }}
-          NEO_SAMPLES: ${{ inputs.samples }}
-          NEO_GPU_ORDER: ${{ inputs.gpu_order }}
+          NEO_BUDGET_USD: ${{ inputs.budget_usd || '5' }}
+          NEO_MAX_HOURLY_USD: ${{ inputs.max_hourly_usd || '0.30' }}
+          NEO_MAX_HOURS: ${{ inputs.max_hours || '0.3' }}
+          NEO_EPOCHS: ${{ inputs.epochs || '80' }}
+          NEO_SAMPLES: ${{ inputs.samples || '12000' }}
+          NEO_GPU_ORDER: ${{ inputs.gpu_order || 'RTX 3090,RTX 4090' }}
         run: |
           python scripts/run_vast_gpu_training.py \
             --budget-usd "$NEO_BUDGET_USD" \
