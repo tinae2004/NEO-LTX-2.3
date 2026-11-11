@@ -49,8 +49,8 @@ jobs:
       - name: Install Blender runtime dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl xz-utils ca-certificates libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libgbm1 libsm6 libxext6 libxrender1 libxfixes3 libxi6 libxkbcommon0 libdbus-1-3 libfontconfig1
-      - name: Install pinned official Blender build with Cycles
+          sudo apt-get install -y curl xz-utils ca-certificates xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libgbm1 libsm6 libxext6 libxrender1 libxfixes3 libxi6 libxkbcommon0 libdbus-1-3 libfontconfig1
+      - name: Install pinned official Blender build
         env:
           BLENDER_VERSION: "4.5.16"
         run: |
@@ -64,16 +64,16 @@ jobs:
           tar -xf "$ARCHIVE"
           BLENDER_DIR="$RUNNER_TEMP/blender-${BLENDER_VERSION}-linux-x64"
           echo "$BLENDER_DIR" >> "$GITHUB_PATH"
-          env -u LD_LIBRARY_PATH "$BLENDER_DIR/blender" --background --python-expr "import bpy; engines=bpy.types.RenderSettings.bl_rna.properties['engine'].enum_items.keys(); print('Blender:', bpy.app.version_string); print('Render engines:', list(engines)); assert 'CYCLES' in engines, 'Official Blender build must include Cycles'"
+          xvfb-run -a env -u LD_LIBRARY_PATH LIBGL_ALWAYS_SOFTWARE=1 "$BLENDER_DIR/blender" --background --python-expr "import bpy; engines=bpy.types.RenderSettings.bl_rna.properties['engine'].enum_items.keys(); print('Blender:', bpy.app.version_string); print('Render engines:', list(engines)); assert 'BLENDER_EEVEE_NEXT' in engines, 'Blender Eevee Next must be available'"
       - name: Install Python dataset dependencies
         run: |
           python -m pip install --upgrade pip
           pip install numpy
       - name: Create procedural NEO demo scene
-        run: env -u LD_LIBRARY_PATH blender --background --python scripts/create_blender_demo_scene.py -- --output /tmp/neo_demo_scene.blend --renderer CYCLES
+        run: xvfb-run -a env -u LD_LIBRARY_PATH LIBGL_ALWAYS_SOFTWARE=1 blender --background --python scripts/create_blender_demo_scene.py -- --output /tmp/neo_demo_scene.blend --renderer EEVEE
       - name: Capture nine animated frames with FULL profile
         run: |
-          env -u LD_LIBRARY_PATH blender --background /tmp/neo_demo_scene.blend --python scripts/blender_capture.py -- --output /tmp/neo_capture/head_turn --start 1 --end 9 --profile FULL
+          xvfb-run -a env -u LD_LIBRARY_PATH LIBGL_ALWAYS_SOFTWARE=1 blender --background /tmp/neo_demo_scene.blend --python scripts/blender_capture.py -- --output /tmp/neo_capture/head_turn --start 1 --end 9 --profile FULL
       - name: Convert Blender capture to labelled training pairs
         run: |
           pip install .
