@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse, json, os, re, shlex, shutil, subprocess, sys, tarfile, tempfile, time
 from pathlib import Path
 import requests
+from urllib.parse import urlparse
 
 API_BASE="https://console.vast.ai/api/v0"
 BLENDER_VERSION="4.5.16"
@@ -20,12 +21,12 @@ class VastAPI:
     def search(self,names):
         return self.request("POST","/bundles/",{
             "gpu_name":{"in":names},"num_gpus":{"eq":1},"gpu_ram":{"gte":24000},
-            "disk_space":{"gte":80},"reliability":{"gte":0.99},
+            "disk_space":{"gte":80},"reliability":{"gte":0.99},"direct_port_count":{"gte":1},
             "verified":{"eq":True},"rentable":{"eq":True},"type":"ondemand","limit":20
         }).get("offers",[])
     def create(self,offer_id,disk_gb,label):
         return self.request("PUT",f"/asks/{offer_id}/",{
-            "image":"pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel",
+            "image":"vastai/pytorch:@vastai-automatic-tag",
             "label":label,"disk":disk_gb,"runtype":"ssh_direct","cancel_unavail":True
         })
     def get_instance(self,instance_id):
@@ -217,11 +218,19 @@ def main():
         while time.monotonic()<ssh_until:
             value=run_local(["vastai","ssh-url",str(instance_id)],env=env,timeout=30)
             tokens=shlex.split(value)
-            if tokens and tokens[0]=="ssh": tokens=tokens[1:]
-            if tokens:
-                ssh_base=["ssh","-i",str(key_path),"-o","IdentitiesOnly=yes",
-                    "-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=/dev/null",
-                    "-o","ConnectTimeout=15"]+tokens
+            ssh_options=["-i",str(key_path),"-o","IdentitiesOnly=yes",
+                "-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=/dev/null",
+                "-o","ConnectTimeout=15"]
+            if value.startswith("ssh://"):
+                parsed=urlparse(value)
+                if not parsed.hostname or not parsed.port:
+                    raise RuntimeError(f"Vast returned an invalid SSH URL: {value!r}")
+                destination=f"{parsed.username or 'root'}@{parsed.hostname}"
+                ssh_base=["ssh",*ssh_options,"-p",str(parsed.port),destination]
+            else:
+                if tokens and tokens[0]=="ssh": tokens=tokens[1:]
+                ssh_base=["ssh",*ssh_options]+tokens if tokens else None
+            if ssh_base:
                 try:
                     run_local(ssh_base+["nvidia-smi"],env=env,timeout=30)
                     break
@@ -274,7 +283,7 @@ def main():
             "max_budget_usd":a.budget_usd,"max_hourly_usd":a.max_hourly_usd,
             "max_runtime_hours":a.max_hours,"epochs_requested":a.epochs,
             "synthetic_samples_requested":a.samples,"source_branch":os.environ.get("GITHUB_REF_NAME"),
-            "source_commit":os.environ.get("GITHUB_SHA"),"elapsed_seconds":time.monotonic()-start,
+            "source_commit":run_local(["git","rev-parse","HEAD"]),"elapsed_seconds":time.monotonic()-start,
             "training_error":str(training_error) if training_error else None}
         (a.output/"vast_run_info.json").write_text(json.dumps(info,indent=2),encoding="utf-8")
         print(json.dumps(info,indent=2),flush=True)
