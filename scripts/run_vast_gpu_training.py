@@ -54,6 +54,11 @@ def start_agent(env):
     if "SSH_AUTH_SOCK" not in env: raise RuntimeError("Could not start ssh-agent")
     return env
 
+def parse_usd(value):
+    """Accept numeric inputs such as 5, $5, or $0.30 from the Actions form."""
+    normalized = str(value).strip().replace("$", "").replace(",", "")
+    return float(normalized)
+
 def as_float(offer,key,default=0.0):
     try: return float(offer.get(key,default) or default)
     except (TypeError,ValueError): return default
@@ -147,8 +152,8 @@ nvidia-smi
 
 def main():
     p=argparse.ArgumentParser()
-    p.add_argument("--budget-usd",type=float,required=True)
-    p.add_argument("--max-hourly-usd",type=float,required=True)
+    p.add_argument("--budget-usd",type=parse_usd,required=True)
+    p.add_argument("--max-hourly-usd",type=parse_usd,required=True)
     p.add_argument("--max-hours",type=float,required=True)
     p.add_argument("--epochs",type=int,default=80)
     p.add_argument("--samples",type=int,default=12000)
