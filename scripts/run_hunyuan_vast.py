@@ -117,6 +117,9 @@ def main():
             '(while kill -0 "$PID" 2>/dev/null; do '
             'echo "[GPU_TELEMETRY]"; '
             'nvidia-smi --query-gpu=name,utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader 2>&1; '
+            'echo "[MODEL_DOWNLOAD_TELEMETRY]"; '
+            'du -sb /workspace/neo-data/models/hunyuanvideo15/ckpts 2>/dev/null || true; '
+            'df -h /workspace/neo-data 2>/dev/null | tail -n 1; '
             'sleep 20; done) & MONITOR=$!; '
             'wait "$PID"; RC=$?; kill "$MONITOR" 2>/dev/null; '
             'wait "$MONITOR" 2>/dev/null; exit "$RC"'
@@ -148,7 +151,12 @@ def main():
                 print("DESTROY_REQUEST_ACCEPTED",flush=True)
                 instance=None
             except Exception as destroy_error:
-                print(f"CRITICAL_DESTROY_FAILURE instance={instance}: {destroy_error}",file=sys.stderr,flush=True)
+                detail=str(destroy_error).lower()
+                if "no_such_instance" in detail or "http 404" in detail:
+                    print(f"INSTANCE_ALREADY_GONE instance={instance}; Vast reports no active instance.",flush=True)
+                    instance=None
+                else:
+                    print(f"CRITICAL_DESTROY_FAILURE instance={instance}: {destroy_error}",file=sys.stderr,flush=True)
         context = (
             f"Workflow: NEO HunyuanVideo 1.5 T2V\\nPrompt: {a.prompt}\\n"
             f"Budget USD: {a.budget_usd}; max hourly USD: {a.max_hourly_usd}; "
@@ -169,7 +177,12 @@ def main():
             try:
                 print(f"DESTROYING_INSTANCE={instance}",flush=True); api("DELETE",f"/instances/{instance}/")
                 print("DESTROY_REQUEST_ACCEPTED",flush=True)
-            except Exception as e: print(f"CRITICAL_DESTROY_FAILURE instance={instance}: {e}",file=sys.stderr,flush=True)
+            except Exception as e:
+                detail=str(e).lower()
+                if "no_such_instance" in detail or "http 404" in detail:
+                    print(f"INSTANCE_ALREADY_GONE instance={instance}; no active Vast contract remains.",flush=True)
+                else:
+                    print(f"CRITICAL_DESTROY_FAILURE instance={instance}: {e}",file=sys.stderr,flush=True)
         if agent: run(["ssh-agent","-k"],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False)
         shutil.rmtree(temp,ignore_errors=True)
 
