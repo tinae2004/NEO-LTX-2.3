@@ -22,6 +22,15 @@ def main():
         raise SystemExit("Safety cap: hourly <= $0.10, total budget <= $1.00, runtime 0.25-1.0 hour.")
     if a.max_hourly_usd*a.max_hours*1.25>a.budget_usd:
         raise SystemExit("Budget does not cover hourly cap x runtime plus 25% reserve.")
+    deadline=float(os.environ.get("NEO_GPU_DEADLINE_MONOTONIC", "0") or 0)
+    if deadline <= 0:
+        deadline=time.monotonic()+a.max_hours*3600
+        os.environ["NEO_GPU_DEADLINE_MONOTONIC"]=str(deadline)
+    def remaining_seconds(stage, cap=None):
+        left=deadline-time.monotonic()
+        if left<=0:
+            raise TimeoutError(f"Total GPU rental time cap reached before {stage}.")
+        return min(left,cap) if cap is not None else left
     key=os.environ.get("VAST_API_KEY","").strip()
     if not key: raise SystemExit("VAST_API_KEY secret is missing.")
     s=requests.Session(); s.headers.update({"Authorization":f"Bearer {key}","Content-Type":"application/json"})
@@ -57,8 +66,8 @@ def main():
         ident=host_identity(offer)
         if not ident["machine_id"] and not ident["host_id"]:
             raise RuntimeError("Cannot persistently blacklist slow host: Vast offer omitted machine_id and host_id.")
-        entry={**ident,"reason":"download speed below 90 MB/s","measured_MBps":round(measured_mbps,2),
-               "threshold_MBps":90,"blacklisted_at_utc":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime())}
+        entry={**ident,"reason":"download speed below 65 MB/s","measured_MBps":round(measured_mbps,2),
+               "threshold_MBps":65,"blacklisted_at_utc":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime())}
         if not any((entry["machine_id"] and x.get("machine_id")==entry["machine_id"]) or
                    (entry["host_id"] and x.get("host_id")==entry["host_id"]) for x in blocked):
             blocked.append(entry)
@@ -128,13 +137,7 @@ def main():
         if instance is None: raise RuntimeError(f"No offer could be rented. Last error: {last}")
         rate=float(selected.get("dph_total",selected.get("dph")))
         print(f"RENTED instance={instance} gpu={selected.get('gpu_name')} hourly_usd={rate:.4f}",flush=True)
-        deadline=time.monotonic()+a.max_hours*3600
-        print(f"GPU_RUNTIME_DEADLINE_SECONDS={a.max_hours*3600:.0f} (includes boot, SSH, setup, downloads, generation and video transfer)",flush=True)
-        def remaining_seconds(stage, cap=None):
-            left=deadline-time.monotonic()
-            if left<=0:
-                raise TimeoutError(f"GPU runtime cap reached before {stage}; destroying instance.")
-            return min(left,cap) if cap is not None else left
+        print(f"GPU_RUNTIME_DEADLINE_SECONDS={max(0,deadline-time.monotonic()):.0f} remaining (shared across retries, boot, SSH, setup, downloads, generation and transfer)",flush=True)
         def get_instance():
             d=api("GET",f"/instances/{instance}/",timeout=min(15,remaining_seconds("instance status check"))); x=d.get("instances",d)
             if isinstance(x,list): return next((z for z in x if int(z.get("id",-1))==int(instance)),{})
@@ -165,7 +168,7 @@ def main():
         if not ssh_base: raise TimeoutError("SSH/NVIDIA preflight never became ready before the rental deadline.")
         # Benchmark network before sending source code or downloading multi-GB models.
         # Four concurrent 32 MiB streams = 128 MiB total benchmark traffic.
-        print("STARTING_PRE_DOWNLOAD_SPEED_TEST threshold_MBps=90 test_bytes=134217728",flush=True)
+        print("STARTING_PRE_DOWNLOAD_SPEED_TEST threshold_MBps=65 test_bytes=134217728",flush=True)
         speed_script = r"""python3 - <<'PY'
 import concurrent.futures, time, urllib.request
 URL='https://speed.cloudflare.com/__down?bytes=33554432'
@@ -190,14 +193,15 @@ if total < 120*1024*1024:
 if mbps < 90:
     raise SystemExit(f'SLOW_GPU_HOST: {mbps:.2f} MB/s is below 90 MB/s')
 PY"""
-        speed_result=run(ssh_base+["bash -lc "+shlex.quote(speed_script)],env=env,capture_output=True,check=False,timeout=min(50,remaining_seconds("pre-download network speed test")))
+        speed_result=run(ssh_base+["bash -lc "+shlex.quote(speed_script)],env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,check=False,timeout=min(50,remaining_seconds("pre-download network speed test")))
         print(speed_result.stdout or "",flush=True)
         if speed_result.returncode:
             match=re.search(r"download_MBps=([0-9.]+)",speed_result.stdout or "")
             measured=float(match.group(1)) if match else 0.0
             if "SLOW_GPU_HOST" in (speed_result.stdout or ""):
                 persist_blacklist(selected,measured)
-                raise RuntimeError(f"Host download speed {measured:.2f} MB/s is below 90 MB/s. Host blacklisted; destroying instance before model downloads.")
+                print(f"SLOW_HOST_RETRY_REQUIRED measured_MBps={measured:.2f} threshold_MBps=65",flush=True)
+                raise RuntimeError(f"Host download speed {measured:.2f} MB/s is below 65 MB/s. Host blacklisted; trying another GPU host.")
             raise RuntimeError(f"Pre-download speed test failed or was incomplete (exit={speed_result.returncode}); no model download started.")
         source=subprocess.Popen(["git","archive","--format=tar.gz","HEAD"],stdout=subprocess.PIPE)
         recv=subprocess.Popen(ssh_base+["bash -lc "+shlex.quote("mkdir -p /workspace/neo && tar -xzf - -C /workspace/neo")],stdin=source.stdout)
@@ -243,6 +247,7 @@ PY"""
                     print(f"{label}:\\n{value[-12000:]}", file=sys.stderr, flush=True)
         print("NEO_HUNYUAN_FAILURE\\n"+failure, file=sys.stderr, flush=True)
         # Stop paid compute before asking DeepSeek to diagnose the failure.
+        slow_host_retry = "SLOW_HOST_RETRY_REQUIRED" in failure
         if instance is not None:
             try:
                 print(f"DESTROYING_INSTANCE_BEFORE_DIAGNOSIS={instance}",flush=True)
@@ -270,6 +275,16 @@ PY"""
             if advisor.stderr: print(advisor.stderr[-4000:],file=sys.stderr,flush=True)
         else:
             print("DEEPSEEK_DIAGNOSIS_SKIPPED: DEEPSEEK_API_KEY GitHub Actions secret is not configured.",flush=True)
+        if slow_host_retry and instance is None:
+            left=deadline-time.monotonic()
+            if left>180:
+                print(f"RENTING_NEXT_GPU_HOST remaining_runtime_seconds={left:.0f}",flush=True)
+                if agent:
+                    run(["ssh-agent","-k"],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=False)
+                    agent=False
+                shutil.rmtree(temp,ignore_errors=True)
+                os.execv(sys.executable,[sys.executable,*sys.argv])
+            print(f"NO_RETRY_RUNTIME_REMAINING seconds={max(0,left):.0f}",flush=True)
         raise
     finally:
         if instance is not None:
