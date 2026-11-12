@@ -25,8 +25,8 @@ def main():
     key=os.environ.get("VAST_API_KEY","").strip()
     if not key: raise SystemExit("VAST_API_KEY secret is missing.")
     s=requests.Session(); s.headers.update({"Authorization":f"Bearer {key}","Content-Type":"application/json"})
-    def api(method,path,payload=None):
-        r=s.request(method,API+path,json=payload,timeout=45)
+    def api(method,path,payload=None,timeout=45):
+        r=s.request(method,API+path,json=payload,timeout=timeout)
         if not r.ok: raise RuntimeError(f"Vast API {method} {path}: HTTP {r.status_code} {r.text[:500]}")
         return r.json() if r.text.strip() else {}
     offers=api("POST","/bundles/",{
@@ -70,8 +70,14 @@ def main():
         rate=float(selected.get("dph_total",selected.get("dph")))
         print(f"RENTED instance={instance} gpu={selected.get('gpu_name')} hourly_usd={rate:.4f}",flush=True)
         deadline=time.monotonic()+a.max_hours*3600
+        print(f"GPU_RUNTIME_DEADLINE_SECONDS={a.max_hours*3600:.0f} (includes boot, SSH, setup, downloads, generation and video transfer)",flush=True)
+        def remaining_seconds(stage, cap=None):
+            left=deadline-time.monotonic()
+            if left<=0:
+                raise TimeoutError(f"GPU runtime cap reached before {stage}; destroying instance.")
+            return min(left,cap) if cap is not None else left
         def get_instance():
-            d=api("GET",f"/instances/{instance}/"); x=d.get("instances",d)
+            d=api("GET",f"/instances/{instance}/",timeout=min(15,remaining_seconds("instance status check"))); x=d.get("instances",d)
             if isinstance(x,list): return next((z for z in x if int(z.get("id",-1))==int(instance)),{})
             return x if isinstance(x,dict) else {}
         ready_deadline=min(deadline,time.monotonic()+1200)
@@ -80,11 +86,11 @@ def main():
             print(f"INSTANCE_STATUS={status}",flush=True)
             if status=="running": break
             if status in ("dead","error","exited","deleted","stopped"): raise RuntimeError(f"Instance failed: {status}")
-            time.sleep(15)
-        else: raise TimeoutError("GPU did not become running within 20 minutes.")
+            time.sleep(min(15,remaining_seconds("GPU boot wait")))
+        else: raise TimeoutError("GPU did not become running within the startup limit or the one-hour rental deadline.")
         ssh_base=None; ssh_deadline=min(deadline,time.monotonic()+600)
         while time.monotonic()<ssh_deadline:
-            value=run(["vastai","ssh-url",str(instance)],env=env,capture_output=True).stdout.strip()
+            value=run(["vastai","ssh-url",str(instance)],env=env,capture_output=True,timeout=min(30,remaining_seconds("SSH endpoint discovery"))).stdout.strip()
             opts=["-i",str(kp),"-o","IdentitiesOnly=yes","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=/dev/null","-o","ConnectTimeout=12"]
             if value.startswith("ssh://"):
                 from urllib.parse import urlparse
@@ -93,15 +99,15 @@ def main():
                 toks=shlex.split(value); toks=toks[1:] if toks and toks[0]=="ssh" else toks
                 ssh_base=["ssh",*opts,*toks] if toks else None
             if ssh_base:
-                probe=run(ssh_base+["nvidia-smi"],env=env,capture_output=True,check=False,timeout=30)
+                probe=run(ssh_base+["nvidia-smi"],env=env,capture_output=True,check=False,timeout=min(25,remaining_seconds("SSH/NVIDIA preflight")))
                 if probe.returncode==0: print(probe.stdout,flush=True); break
                 ssh_base=None
-            time.sleep(10)
-        if not ssh_base: raise TimeoutError("SSH/NVIDIA preflight never became ready.")
+            time.sleep(min(10,remaining_seconds("SSH availability wait")))
+        if not ssh_base: raise TimeoutError("SSH/NVIDIA preflight never became ready before the rental deadline.")
         source=subprocess.Popen(["git","archive","--format=tar.gz","HEAD"],stdout=subprocess.PIPE)
         recv=subprocess.Popen(ssh_base+["bash -lc "+shlex.quote("mkdir -p /workspace/neo && tar -xzf - -C /workspace/neo")],stdin=source.stdout)
         source.stdout.close()
-        if recv.wait(timeout=300)!=0 or source.wait(timeout=60)!=0: raise RuntimeError("Source transfer failed.")
+        if recv.wait(timeout=min(300,remaining_seconds("source transfer")))!=0 or source.wait(timeout=min(60,remaining_seconds("source archive completion")))!=0: raise RuntimeError("Source transfer failed.")
         # Stream remote generation output directly into the Actions log. The old
         # capture_output=True buffered everything until the job ended.
         script = "cd /workspace/neo && chmod +x scripts/run_hunyuan_t2v_16gb.sh && " + "./scripts/run_hunyuan_t2v_16gb.sh " + shlex.quote(a.prompt)
@@ -115,15 +121,15 @@ def main():
             'wait "$PID"; RC=$?; kill "$MONITOR" 2>/dev/null; '
             'wait "$MONITOR" 2>/dev/null; exit "$RC"'
         )
-        remaining=max(60,int(deadline-time.monotonic()))
-        print("STARTING_HUNYUAN_GENERATION_WITH_LIVE_LOGS_AND_GPU_TELEMETRY",flush=True)
+        remaining=remaining_seconds("remote dependency installation, model downloads and video generation")
+        print(f"STARTING_HUNYUAN_GENERATION_WITH_LIVE_LOGS_AND_GPU_TELEMETRY remaining_seconds={remaining:.1f}",flush=True)
         result=run(ssh_base+["bash -lc "+shlex.quote(remote_cmd)],env=env,timeout=remaining,check=False)
         if result.returncode: raise RuntimeError(f"Hunyuan generation exited with code {result.returncode}")
-        found=run(ssh_base+["bash -lc "+shlex.quote("find /workspace/neo-data/outputs/hunyuan -maxdepth 1 -type f -name '*.mp4' -print -quit")],env=env,capture_output=True).stdout.strip()
+        found=run(ssh_base+["bash -lc "+shlex.quote("find /workspace/neo-data/outputs/hunyuan -maxdepth 1 -type f -name '*.mp4' -print -quit")],env=env,capture_output=True,timeout=remaining_seconds("generated video lookup")).stdout.strip()
         if not found: raise RuntimeError("Generation completed but no MP4 was found.")
         local=out/"hunyuan_t2v.mp4"
         with local.open("wb") as f:
-            cp=run(ssh_base+["cat "+shlex.quote(found)],env=env,stdout=f,stderr=subprocess.PIPE,timeout=300,check=False)
+            cp=run(ssh_base+["cat "+shlex.quote(found)],env=env,stdout=f,stderr=subprocess.PIPE,timeout=remaining_seconds("generated video transfer"),check=False)
         if cp.returncode or local.stat().st_size==0: raise RuntimeError("Failed to download generated MP4.")
         print(f"VIDEO_OUTPUT={local} BYTES={local.stat().st_size}",flush=True)
     except Exception as exc:
