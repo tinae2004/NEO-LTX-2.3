@@ -149,17 +149,24 @@ echo "DEPENDENCIES_INSTALL_COMPLETE"
 # The previous fixed concurrency=32 overrode the high-performance controller
 # and capped parallel range downloads. Let Xet adapt up to its host/network limit.
 echo "[DOWNLOAD_TUNING] Updating hf-xet transfer engine..."
-"$PYTHON_BIN" -m pip install --upgrade --progress-bar on hf_xet
+"$PYTHON_BIN" -m pip install --upgrade --progress-bar on "hf_xet>=1.7.0"
 export HF_XET_HIGH_PERFORMANCE=1
 unset HF_XET_FIXED_DOWNLOAD_CONCURRENCY
 export HF_HUB_DOWNLOAD_TIMEOUT=300
+export HF_XET_CLIENT_AC_LOGGING_INTERVAL_MS=10000
 echo "HF_XET_HIGH_PERFORMANCE=$HF_XET_HIGH_PERFORMANCE"
 echo "HF_XET_FIXED_DOWNLOAD_CONCURRENCY=adaptive"
+echo "HF_XET_CLIENT_AC_LOGGING_INTERVAL_MS=$HF_XET_CLIENT_AC_LOGGING_INTERVAL_MS"
 "$PYTHON_BIN" - <<'PY'
-import hf_xet
 from importlib.metadata import version
-print(f"HF_XET_VERSION={version('hf_xet')}", flush=True)
+from packaging.version import Version
+import hf_xet
+xet_version = Version(version("hf_xet"))
+if xet_version < Version("1.7.0"):
+    raise SystemExit(f"ERROR: hf_xet {xet_version} is too old for memory-aware high-performance mode.")
+print(f"HF_XET_VERSION={xet_version}", flush=True)
 print(f"HF_HUB_VERSION={version('huggingface_hub')}", flush=True)
+print("HF_XET_ADAPTIVE_DOWNLOAD_CONCURRENCY=enabled", flush=True)
 PY
 
 # Download only the model components used by this 480p text-to-video run.
