@@ -80,14 +80,16 @@ fi
 cd "$REPO_DIR"
 
 # Install runtime dependencies into the active worker environment.
-"$PYTHON_BIN" -m pip install --upgrade pip
-"$PYTHON_BIN" -m pip install -r requirements.txt
-"$PYTHON_BIN" -m pip install -U "huggingface_hub==0.34.0" modelscope tencentcloud-sdk-python
+echo "[1/7] Installing Python dependencies..."
+"$PYTHON_BIN" -m pip install --progress-bar on --upgrade pip
+"$PYTHON_BIN" -m pip install --progress-bar on -r requirements.txt
+"$PYTHON_BIN" -m pip install --progress-bar on -U "huggingface_hub==0.34.0" modelscope tencentcloud-sdk-python
+echo "DEPENDENCIES_INSTALL_COMPLETE"
 
 # Download checkpoints only when needed. Hugging Face downloads resume if interrupted.
 if [[ ! -d "$MODEL_DIR/transformer" && ! -f "$MODEL_DIR/.neo_hunyuan_base_downloaded" ]]; then
-  echo "Downloading HunyuanVideo-1.5 checkpoints..."
-  "$PYTHON_BIN" -c 'from huggingface_hub import snapshot_download; import sys; snapshot_download(repo_id=sys.argv[1], local_dir=sys.argv[2])' tencent/HunyuanVideo-1.5 "$MODEL_DIR"
+  echo "[2/7] DOWNLOADING HUNYUANVIDEO-1.5 BASE CHECKPOINTS..."
+  "$PYTHON_BIN" "$(dirname "$0")/hf_download_with_progress.py" tencent/HunyuanVideo-1.5 "$MODEL_DIR"
   touch "$MODEL_DIR/.neo_hunyuan_base_downloaded"
 else
   echo "Hunyuan base checkpoint folder already exists; skipping full download."
@@ -96,18 +98,19 @@ fi
 mkdir -p "$MODEL_DIR/text_encoder/llm" "$MODEL_DIR/text_encoder/byt5-small" "$MODEL_DIR/text_encoder/Glyph-SDXL-v2"
 
 if [[ ! -f "$MODEL_DIR/text_encoder/llm/config.json" ]]; then
-  echo "Downloading Qwen2.5-VL-7B text encoder..."
-  "$PYTHON_BIN" -c 'from huggingface_hub import snapshot_download; import sys; snapshot_download(repo_id=sys.argv[1], local_dir=sys.argv[2])' Qwen/Qwen2.5-VL-7B-Instruct "$MODEL_DIR/text_encoder/llm"
+  echo "[3/7] DOWNLOADING QWEN2.5-VL-7B TEXT ENCODER..."
+  "$PYTHON_BIN" "$(dirname "$0")/hf_download_with_progress.py" Qwen/Qwen2.5-VL-7B-Instruct "$MODEL_DIR/text_encoder/llm"
 fi
 
 if [[ ! -f "$MODEL_DIR/text_encoder/byt5-small/config.json" ]]; then
-  echo "Downloading ByT5 text encoder..."
-  "$PYTHON_BIN" -c 'from huggingface_hub import snapshot_download; import sys; snapshot_download(repo_id=sys.argv[1], local_dir=sys.argv[2])' google/byt5-small "$MODEL_DIR/text_encoder/byt5-small"
+  echo "[4/7] DOWNLOADING BYT5 TEXT ENCODER..."
+  "$PYTHON_BIN" "$(dirname "$0")/hf_download_with_progress.py" google/byt5-small "$MODEL_DIR/text_encoder/byt5-small"
 fi
 
 if [[ ! -d "$MODEL_DIR/text_encoder/Glyph-SDXL-v2/checkpoints" ]]; then
-  echo "Downloading Glyph-SDXL-v2 text encoder assets..."
+  echo "[5/7] DOWNLOADING GLYPH-SDXL-V2 ASSETS..."
   modelscope download --model AI-ModelScope/Glyph-SDXL-v2 --local_dir "$MODEL_DIR/text_encoder/Glyph-SDXL-v2"
+  echo "GLYPH_DOWNLOAD_COMPLETE"
 fi
 
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True,max_split_size_mb:128}"
@@ -115,7 +118,7 @@ export TOKENIZERS_PARALLELISM=false
 
 OUTPUT_PATH="$OUTPUT_DIR/hunyuan_t2v_$(date -u +%Y%m%dT%H%M%S).mp4"
 
-echo "Starting 480p text-to-video generation..."
+echo "[6/7] MODEL ASSETS READY — STARTING 480P VIDEO GENERATION..."
 echo "Prompt: $PROMPT"
 echo "Frames: $VIDEO_LENGTH (~6 seconds at 24 fps) | Steps: $INFERENCE_STEPS"
 echo "Offloading: enabled | Super-resolution: disabled | Prompt rewrite: disabled"
@@ -144,6 +147,8 @@ fi
   --output_path "$OUTPUT_PATH" \
   --model_path "$MODEL_DIR"
 
+echo "[7/7] VERIFYING GENERATED VIDEO..."
 test -s "$OUTPUT_PATH" || { echo "ERROR: Generation finished but output file is missing/empty."; exit 1; }
 echo "SUCCESS: $OUTPUT_PATH"
+stat -c 'VIDEO_FILE_SIZE_BYTES=%s' "$OUTPUT_PATH"
 nvidia-smi
