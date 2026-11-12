@@ -19,24 +19,27 @@ SEED="${SEED:-123}"
 
 mkdir -p "$NEO_DATA_DIR/repos" "$MODEL_DIR" "$OUTPUT_DIR"
 
-# Vast's PyTorch image may provide python3 but omit the "python" alias.
-PYTHON_BIN="$(command -v python3 || command -v python || true)"
-if [[ -z "$PYTHON_BIN" ]]; then
-  echo "Python is missing; installing Python 3 and pip..."
-  if command -v apt-get >/dev/null 2>&1; then
+# Use an isolated virtual environment: Debian's system pip is externally
+# managed and must never be upgraded/uninstalled by this workflow. Preserve
+# preinstalled GPU packages (especially torch) via --system-site-packages.
+SYSTEM_PYTHON="$(command -v python3 || command -v python || true)"
+if [[ -z "$SYSTEM_PYTHON" ]]; then
+  echo "Python is missing; installing Python 3 and venv support..."
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip
+  SYSTEM_PYTHON="$(command -v python3)"
+fi
+VENV_DIR="$NEO_DATA_DIR/venv"
+if [[ ! -x "$VENV_DIR/bin/python" ]]; then
+  if ! "$SYSTEM_PYTHON" -m venv --system-site-packages "$VENV_DIR"; then
+    echo "Installing missing Python venv support..."
     apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-pip
-  else
-    echo "ERROR: No Python interpreter and apt-get is unavailable."
-    exit 1
+    DEBIAN_FRONTEND=noninteractive apt-get install -y python3-venv
+    "$SYSTEM_PYTHON" -m venv --system-site-packages "$VENV_DIR"
   fi
-  PYTHON_BIN="$(command -v python3 || true)"
 fi
-if [[ -z "$PYTHON_BIN" ]]; then
-  echo "ERROR: Python 3 installation did not provide python3."
-  exit 1
-fi
-echo "Using Python interpreter: $PYTHON_BIN"
+PYTHON_BIN="$VENV_DIR/bin/python"
+echo "Using isolated Python environment: $PYTHON_BIN"
 
 echo "== NEO HunyuanVideo 1.5 / 16GB T2V =="
 echo "Data directory: $NEO_DATA_DIR"
