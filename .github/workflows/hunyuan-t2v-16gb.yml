@@ -49,7 +49,7 @@ jobs:
           python -m pip install --upgrade pip requests
           python -m pip install vastai
       - name: Validate runner script syntax
-        run: python -m py_compile scripts/run_hunyuan_vast.py
+        run: python -m py_compile scripts/run_hunyuan_vast.py scripts/deepseek_agent.py
       - name: Validate limits before provisioning
         env:
           BUDGET: ${{ inputs.budget_usd || '0.50' }}
