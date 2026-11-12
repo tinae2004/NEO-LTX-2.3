@@ -17,7 +17,7 @@ NEO's generation console. This branch adds the first **HunyuanVideo 1.5 text-to-
 - Target GPU: RTX 5060 Ti 16GB or another NVIDIA GPU with at least 14 GiB VRAM.
 - Initial mode: 480p text-to-video, no image input.
 - Memory strategy: model/group CPU offloading.
-- Initial smoke test: 49 frames (~2 seconds at 24 fps), 50 inference steps.
+- Initial smoke test: 145 frames (~6 seconds at 24 fps), 50 inference steps.
 - Worker launcher: `scripts/run_hunyuan_t2v_16gb.sh`
 - Setup and limitations: `docs/HUNYUAN_T2V_16GB.md`
 
