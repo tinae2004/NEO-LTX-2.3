@@ -82,20 +82,75 @@ fi
 
 cd "$REPO_DIR"
 
-# Install runtime dependencies into the active worker environment.
-echo "[1/7] Installing Python dependencies..."
-"$PYTHON_BIN" -m pip install --progress-bar on --upgrade pip
-"$PYTHON_BIN" -m pip install --progress-bar on -r requirements.txt
-"$PYTHON_BIN" -m pip install --progress-bar on -U "huggingface_hub==0.34.0" modelscope tencentcloud-sdk-python
+# Reuse the CUDA-enabled PyTorch stack baked into the Vast PyTorch image.
+# Installing the pinned torch/torchvision/torchaudio wheels on every rental can
+# download several GB and replace a working CUDA stack.
+echo "[1/7] VERIFYING PREINSTALLED PYTORCH/CUDA STACK..."
+"$PYTHON_BIN" - <<'PY'
+import torch
+import torchvision
+import torchaudio
+from packaging.version import Version
+
+version = Version(torch.__version__.split("+")[0])
+if version < Version("2.6.0"):
+    raise SystemExit(f"Preinstalled PyTorch {version} is too old; need >=2.6.0")
+if not torch.cuda.is_available():
+    raise SystemExit("Preinstalled PyTorch cannot access CUDA; refusing to reinstall CUDA wheels on the paid GPU.")
+print(f"PREINSTALLED_TORCH={torch.__version__}", flush=True)
+print(f"PREINSTALLED_TORCHVISION={torchvision.__version__}", flush=True)
+print(f"PREINSTALLED_TORCHAUDIO={torchaudio.__version__}", flush=True)
+print(f"PYTORCH_CUDA={torch.version.cuda}", flush=True)
+print(f"GPU={torch.cuda.get_device_name(0)}", flush=True)
+PY
+echo "PREINSTALLED_CUDA_STACK_VERIFIED"
+
+echo "Installing Hunyuan dependencies without replacing the working CUDA stack..."
+FILTERED_REQUIREMENTS="$NEO_DATA_DIR/requirements-hunyuan-no-torch.txt"
+"$PYTHON_BIN" - "$REPO_DIR/requirements.txt" "$FILTERED_REQUIREMENTS" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+source, target = map(Path, sys.argv[1:])
+skip = {"torch", "torchvision", "torchaudio"}
+kept = []
+removed = []
+for line in source.read_text().splitlines():
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        kept.append(line)
+        continue
+    name = re.split(r"[<=>!~\[]", stripped, maxsplit=1)[0].strip().lower().replace("_", "-")
+    if name in skip:
+        removed.append(stripped)
+    else:
+        kept.append(line)
+target.write_text("\n".join(kept) + "\n")
+print("CUDA_PACKAGES_REUSED=" + ", ".join(removed), flush=True)
+print(f"NON_CUDA_REQUIREMENTS={sum(bool(x.strip()) and not x.lstrip().startswith('#') for x in kept)}", flush=True)
+PY
+"$PYTHON_BIN" -m pip install --progress-bar on -r "$FILTERED_REQUIREMENTS"
+"$PYTHON_BIN" -m pip install --progress-bar on tencentcloud-sdk-python
 echo "DEPENDENCIES_INSTALL_COMPLETE"
 
-# Download checkpoints only when needed. Hugging Face downloads resume if interrupted.
-if [[ ! -d "$MODEL_DIR/transformer" && ! -f "$MODEL_DIR/.neo_hunyuan_base_downloaded" ]]; then
-  echo "[2/7] DOWNLOADING HUNYUANVIDEO-1.5 BASE CHECKPOINTS..."
-  "$PYTHON_BIN" "$SCRIPT_DIR/hf_download_with_progress.py" tencent/HunyuanVideo-1.5 "$MODEL_DIR"
+# Download only the model components used by this 480p text-to-video run.
+# The complete upstream transformer directory is hundreds of GB and includes
+# unrelated I2V, 720p, SR and distilled checkpoints.
+T2V_WEIGHT="$MODEL_DIR/transformer/480p_t2v/diffusion_pytorch_model.safetensors"
+VAE_WEIGHT="$MODEL_DIR/vae/diffusion_pytorch_model.safetensors"
+if [[ ! -s "$T2V_WEIGHT" || ! -s "$VAE_WEIGHT" || ! -f "$MODEL_DIR/transformer/480p_t2v/config.json" ]]; then
+  echo "[2/7] DOWNLOADING ONLY HUNYUANVIDEO-1.5 480P T2V + VAE CHECKPOINTS..."
+  "$PYTHON_BIN" "$SCRIPT_DIR/hf_download_with_progress.py" tencent/HunyuanVideo-1.5 "$MODEL_DIR" \
+    --max-workers 8 \
+    --allow config.json model_index.json 'scheduler/**' 'transformer/480p_t2v/**' 'vae/**'
+  test -s "$T2V_WEIGHT" || { echo "ERROR: 480p T2V transformer checkpoint is missing/empty."; exit 1; }
+  test -s "$VAE_WEIGHT" || { echo "ERROR: Hunyuan VAE checkpoint is missing/empty."; exit 1; }
+  test -f "$MODEL_DIR/transformer/480p_t2v/config.json" || { echo "ERROR: 480p T2V transformer config is missing."; exit 1; }
   touch "$MODEL_DIR/.neo_hunyuan_base_downloaded"
+  echo "HUNYUAN_480P_T2V_BASE_ASSETS_VERIFIED"
 else
-  echo "Hunyuan base checkpoint folder already exists; skipping full download."
+  echo "Hunyuan 480p T2V transformer and VAE already exist; skipping download."
 fi
 
 mkdir -p "$MODEL_DIR/text_encoder/llm" "$MODEL_DIR/text_encoder/byt5-small" "$MODEL_DIR/text_encoder/Glyph-SDXL-v2"
