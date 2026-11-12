@@ -1,5 +1,6 @@
 import pytest
-import torch
+
+torch = pytest.importorskip("torch", reason="translator training extra is optional in data-pipeline CI")
 
 from neo_video_gen.translator.model import MotionTranslator
 

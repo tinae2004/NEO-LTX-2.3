@@ -5,13 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "neo-video-gen"
 version = "0.1.0"
-description = "NEO 3D-to-2D motion translation research platform"
+description = "NEO video generation and Shona speech-data research platform"
 requires-python = ">=3.10"
 dependencies = ["numpy>=1.26", "Pillow>=10.0", "requests>=2.31"]
 
 [project.optional-dependencies]
 app = ["gradio>=5.0,<6"]
 train = ["torch>=2.3", "tqdm>=4.66"]
+shona-data = ["datasets>=3.0", "huggingface_hub>=0.25", "soundfile>=0.12", "numpy>=1.26"]
 dev = ["pytest>=8", "ruff>=0.5"]
 
 [tool.setuptools.packages.find]
