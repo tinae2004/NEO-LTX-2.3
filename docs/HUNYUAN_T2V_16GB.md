@@ -6,7 +6,7 @@ This branch adds the first HunyuanVideo 1.5 **text-to-video** worker path. It is
 
 - Target: one NVIDIA RTX GPU with at least 14 GiB reported VRAM (the initial marketplace target is RTX 5060 Ti 16GB).
 - Mode: text-to-video only; no input image.
-- Initial output: 480p, 49 frames (~2 seconds at 24 fps), 50 inference steps.
+- Initial output: 480p, 145 frames (~6 seconds at 24 fps), 50 inference steps.
 - CPU/group offloading enabled; super-resolution and remote prompt rewriting disabled.
 - Model/code/data paths are under `NEO_DATA_DIR`, which should point to a mounted persistent volume when one is available.
 
@@ -33,7 +33,7 @@ The script:
 
 Environment overrides:
 - `NEO_DATA_DIR`: persistent storage root (default `/workspace/neo-data`)
-- `VIDEO_LENGTH`: frames (default 49; use 121 for roughly 5 seconds)
+- `VIDEO_LENGTH`: frames (default 145; use 121 for roughly 5 seconds)
 - `INFERENCE_STEPS`: inference steps (default 50)
 - `SEED`: random seed (default 123)
 
