@@ -10,19 +10,30 @@ pinned: false
 
 # NEO VIDEO GEN
 
-NEO's generation console integrating LTX-2.3 for joint audio/video output.
+NEO's generation console. This branch adds the first **HunyuanVideo 1.5 text-to-video worker** for 16GB-class RTX testing while retaining the existing LTX-2.3 ComfyUI prototype.
 
-## Generate a video
-1. Run/update ComfyUI with native LTX-2.3 support.
-2. Install the LTX-2.3 distilled checkpoint, compatible text encoder and required VAEs.
-3. Load an LTX-2.3 Text-to-Video or Image-to-Video workflow and export **API format** JSON.
-4. In the NEO Generate tab, enter the ComfyUI URL, upload that JSON, enter the positive-prompt node ID and prompt. For image-to-video, set the image-loader node ID and upload a start image.
-5. Click **Generate video with sound**. NEO submits once, polls the job and downloads the output. It will not blindly retry an uncertain paid submission.
+## First generation target: HunyuanVideo 1.5 T2V
 
-Use the node IDs in your exported workflow, not the example IDs in the UI. The workflow must save a video (for example with SaveVideo).
+- Target GPU: RTX 5060 Ti 16GB or another NVIDIA GPU with at least 14 GiB VRAM.
+- Initial mode: 480p text-to-video, no image input.
+- Memory strategy: model/group CPU offloading.
+- Initial smoke test: 49 frames (~2 seconds at 24 fps), 50 inference steps.
+- Worker launcher: `scripts/run_hunyuan_t2v_16gb.sh`
+- Setup and limitations: `docs/HUNYUAN_T2V_16GB.md`
 
-## RTX 3090 24GB test
-Start with short, low-resolution output on the 24GB RTX 3090 and the LTX-2.3 distilled checkpoint. Use an Ampere-compatible quantization/workflow; do not assume every FP8 kernel is supported on RTX 30-series. Log peak VRAM, generation wall time, output duration and audio/video synchronization. Offloading may be required and may reduce speed. Do not assume 720p or long clips will fit until measured.
+Run on a rented Vast GPU after attaching/mounting persistent storage:
 
-## Honest status
-The previous Blender-to-skeleton translator was a research baseline, not a video generator. Blender remains for future paired audiovisual data creation. This app submits generation jobs to an already-running ComfyUI endpoint; it does **not** rent Vast.ai GPUs automatically. GPU rental is a separate, manually controlled action under the approved budget.
+```bash
+export NEO_DATA_DIR=/workspace/neo-data
+bash scripts/run_hunyuan_t2v_16gb.sh "A cinematic wide shot of a Zimbabwean village at sunrise"
+```
+
+Tencent documents a 14GB minimum with model offloading enabled. A 16GB card is a tight-fit target, not a guarantee. Prefer a host with 64 GiB system RAM for the first test; the script warns below 48 GiB. Validate actual generation, peak VRAM, RAM, disk use and speed before using it for customer jobs.
+
+## Existing LTX-2.3 prototype
+
+The Gradio app still contains the earlier LTX-2.3 ComfyUI client. It requires an already-running ComfyUI endpoint and an API-format workflow JSON. It does not automatically rent Vast GPUs.
+
+## Honest implementation status
+
+The Hunyuan script is a worker bootstrap and smoke-test path. It does **not yet** rent GPUs, create or attach Vast volumes, expose a customer-facing generation API, queue jobs, handle payments, or automatically destroy instances. Those are subsequent integration steps. Keep model weights and outputs under `NEO_DATA_DIR` on persistent storage to avoid repeated large downloads.
