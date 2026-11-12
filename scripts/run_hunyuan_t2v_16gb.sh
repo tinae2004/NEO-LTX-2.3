@@ -122,12 +122,12 @@ for line in source.read_text().splitlines():
     if not stripped or stripped.startswith("#"):
         kept.append(line)
         continue
-    name = re.split(r"[<=>!~\\[]", stripped, maxsplit=1)[0].strip().lower().replace("_", "-")
+    name = re.split(r"[<=>!~\[]", stripped, maxsplit=1)[0].strip().lower().replace("_", "-")
     if name in skip:
         removed.append(stripped)
     else:
         kept.append(line)
-target.write_text("\\n".join(kept) + "\\n")
+target.write_text("\n".join(kept) + "\n")
 print("CUDA_PACKAGES_REUSED=" + ", ".join(removed), flush=True)
 print(f"NON_CUDA_REQUIREMENTS={sum(bool(x.strip()) and not x.lstrip().startswith('#') for x in kept)}", flush=True)
 PY
