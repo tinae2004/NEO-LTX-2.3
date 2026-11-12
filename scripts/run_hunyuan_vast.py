@@ -106,16 +106,14 @@ def main():
         # capture_output=True buffered everything until the job ended.
         script = "cd /workspace/neo && chmod +x scripts/run_hunyuan_t2v_16gb.sh && " + "./scripts/run_hunyuan_t2v_16gb.sh " + shlex.quote(a.prompt)
         remote_cmd = (
-            "set +e; LOG=/tmp/neo-hunyuan-generation.log; STATUS=/tmp/neo-hunyuan-generation.status; "
-            "rm -f \\"$LOG\\" \\"$STATUS\\"; "
-            "(" + script + " >\\\"$LOG\\\" 2>&1; echo $? > \\"$STATUS\\") & PID=$!; "
-            "tail -n +1 -f \\"$LOG\\" & TAILPID=$!; "
-            "while kill -0 $PID 2>/dev/null; do "
-            "echo '[GPU_TELEMETRY]'; "
-            "nvidia-smi --query-gpu=name,utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader 2>&1; "
-            "sleep 20; done; "
-            "wait $PID; RC=$?; kill $TAILPID 2>/dev/null; wait $TAILPID 2>/dev/null; "
-            "if [ -f \\"$STATUS\\" ]; then RC=$(cat \\"$STATUS\\"); fi; exit $RC"
+            'LOG=/tmp/neo-hunyuan-generation.log; '
+            '(' + script + ') > >(tee "$LOG") 2>&1 & PID=$!; '
+            '(while kill -0 "$PID" 2>/dev/null; do '
+            'echo "[GPU_TELEMETRY]"; '
+            'nvidia-smi --query-gpu=name,utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader 2>&1; '
+            'sleep 20; done) & MONITOR=$!; '
+            'wait "$PID"; RC=$?; kill "$MONITOR" 2>/dev/null; '
+            'wait "$MONITOR" 2>/dev/null; exit "$RC"'
         )
         remaining=max(60,int(deadline-time.monotonic()))
         print("STARTING_HUNYUAN_GENERATION_WITH_LIVE_LOGS_AND_GPU_TELEMETRY",flush=True)
