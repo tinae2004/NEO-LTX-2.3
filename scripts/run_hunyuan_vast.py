@@ -96,25 +96,27 @@ def main():
         saved=gh.put(url,json=payload,timeout=30)
         if not saved.ok: raise RuntimeError(f"Blacklist persistence failed: HTTP {saved.status_code} {saved.text[:500]}")
         print(f"GPU_HOST_BLACKLISTED machine_id={ident['machine_id']} host_id={ident['host_id']} location={json.dumps(ident['geolocation'],sort_keys=True)} gpu={ident['gpu_name']} cpu={ident['cpu_name']} speed_MBps={measured_mbps:.2f}",flush=True)
-    offers=api("POST","/bundles/",{
-        "gpu_name":{"in":["RTX 5060 Ti","RTX 5070 Ti","RTX 4070 Ti SUPER","RTX 4080","RTX 5080","RTX 4060 Ti"]},
-        "num_gpus":{"eq":1},"gpu_ram":{"gte":14},"cpu_ram":{"gte":48},
-        "disk_space":{"gte":a.disk_gb},"reliability":{"gte":0.99},
-        "verified":{"eq":True},"rentable":{"eq":True},"type":"ondemand","limit":50
-    }).get("offers",[])
-    candidates=[]
-    skipped_blacklisted=0
-    for o in offers:
-        name=str(o.get("gpu_name","")).upper().replace("_"," ")
-        rate=float(o.get("dph_total",o.get("dph",0)) or 0)
-        if not any(n in name for n in ("RTX 5060 TI","RTX 5070 TI","RTX 4070 TI SUPER","RTX 4080","RTX 5080","RTX 4060 TI")): continue
-        if rate<=0 or rate>a.max_hourly_usd or rate*a.max_hours*1.25>a.budget_usd: continue
-        if is_blacklisted(o):
-            skipped_blacklisted+=1
-            continue
-        candidates.append((rate,-float(o.get("reliability",0) or 0),o))
-    print(f"GPU_HOST_BLACKLIST_LOADED={len(blocked)} matching_offers_skipped={skipped_blacklisted}",flush=True)
-    candidates.sort(key=lambda x:(x[0],x[1]))
+    def find_candidates():
+        offers=api("POST","/bundles/",{
+            "gpu_name":{"in":["RTX 5060 Ti","RTX 5070 Ti","RTX 4070 Ti SUPER","RTX 4080","RTX 5080","RTX 4060 Ti"]},
+            "num_gpus":{"eq":1},"gpu_ram":{"gte":14},"cpu_ram":{"gte":48},
+            "disk_space":{"gte":a.disk_gb},"reliability":{"gte":0.99},
+            "verified":{"eq":True},"rentable":{"eq":True},"type":"ondemand","limit":50
+        }).get("offers",[])
+        found=[]; skipped=0
+        for o in offers:
+            name=str(o.get("gpu_name","")).upper().replace("_"," ")
+            rate=float(o.get("dph_total",o.get("dph",0)) or 0)
+            if not any(n in name for n in ("RTX 5060 TI","RTX 5070 TI","RTX 4070 TI SUPER","RTX 4080","RTX 5080","RTX 4060 TI")): continue
+            if rate<=0 or rate>a.max_hourly_usd or rate*a.max_hours*1.25>a.budget_usd: continue
+            if is_blacklisted(o):
+                skipped+=1
+                continue
+            found.append((rate,-float(o.get("reliability",0) or 0),o))
+        found.sort(key=lambda x:(x[0],x[1]))
+        print(f"GPU_HOST_BLACKLIST_LOADED={len(blocked)} matching_offers_skipped={skipped} eligible_offers={len(found)}",flush=True)
+        return found
+    candidates=find_candidates()
     if not candidates: raise SystemExit("No verified 16GB RTX offer meets all limits. No rental made.")
     out=Path(a.output_dir); out.mkdir(parents=True,exist_ok=True)
     temp=Path(tempfile.mkdtemp(prefix="neo-hunyuan-")); instance=None; agent=False
@@ -127,18 +129,36 @@ def main():
         run(["vastai","set","api-key",key],env=env)
         kp=temp/"key"; run(["ssh-keygen","-q","-t","ed25519","-N","","-f",str(kp)])
         run(["vastai","create","ssh-key",Path(str(kp)+".pub").read_text().strip()],env=env)
-        selected=None; last=None
-        for _,__,offer in candidates[:12]:
-            try:
-                resp=api("PUT",f"/asks/{int(offer['id'])}/",{
-                    "image":"vastai/pytorch:@vastai-automatic-tag","label":"NEO-Hunyuan-T2V-16GB",
-                    "disk":a.disk_gb,"runtype":"ssh_direct","cancel_unavail":True})
-                instance=resp.get("new_contract")
-                if instance is None: raise RuntimeError(f"Rental response missing instance id: {resp}")
-                selected=offer; break
-            except Exception as e:
-                last=e; print(f"Offer {offer.get('id')} failed: {e}",flush=True)
-        if instance is None: raise RuntimeError(f"No offer could be rented. Last error: {last}")
+        selected=None; last=None; attempted=set()
+        # Vast offers are ephemeral: refresh the market when an ask disappears.
+        for refresh_round in range(5):
+            if refresh_round:
+                print(f"REFRESHING_VAST_OFFERS round={refresh_round+1}/5",flush=True)
+                candidates=find_candidates()
+            if not candidates:
+                break
+            for _,__,offer in candidates:
+                offer_id=str(offer.get("id",""))
+                if not offer_id or offer_id in attempted:
+                    continue
+                attempted.add(offer_id)
+                try:
+                    resp=api("PUT",f"/asks/{int(offer_id)}/",{
+                        "image":"vastai/pytorch:@vastai-automatic-tag","label":"NEO-Hunyuan-T2V-16GB",
+                        "disk":a.disk_gb,"runtype":"ssh_direct","cancel_unavail":True})
+                    instance=resp.get("new_contract")
+                    if instance is None: raise RuntimeError(f"Rental response missing instance id: {resp}")
+                    selected=offer
+                    break
+                except Exception as e:
+                    last=e; print(f"Offer {offer_id} failed: {e}",flush=True)
+                    message=str(e).lower()
+                    if "no_such_ask" not in message and "not available" not in message:
+                        raise
+            if instance is not None:
+                break
+        if instance is None:
+            raise RuntimeError(f"No current offer could be rented after refreshing Vast offers. Last error: {last}")
         rate=float(selected.get("dph_total",selected.get("dph")))
         print(f"RENTED instance={instance} gpu={selected.get('gpu_name')} hourly_usd={rate:.4f}",flush=True)
         print(f"GPU_RUNTIME_DEADLINE_SECONDS={max(0,deadline-time.monotonic()):.0f} remaining (shared across retries, boot, SSH, setup, downloads, generation and transfer)",flush=True)
