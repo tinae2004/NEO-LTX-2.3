@@ -184,6 +184,8 @@ fi
 
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True,max_split_size_mb:128}"
 export TOKENIZERS_PARALLELISM=false
+# hf-xet 1.7+ adapts buffering to available memory in high-performance mode.
+export HF_XET_HIGH_PERFORMANCE=1
 
 OUTPUT_PATH="$OUTPUT_DIR/hunyuan_t2v_$(date -u +%Y%m%dT%H%M%S).mp4"
 
