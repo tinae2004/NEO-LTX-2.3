@@ -6,6 +6,7 @@ on:
       - '.github/workflows/hunyuan-t2v-16gb.yml'
       - 'scripts/run_hunyuan_vast.py'
       - 'scripts/run_hunyuan_t2v_16gb.sh'
+      - 'scripts/hf_download_with_progress.py'
   workflow_dispatch:
     inputs:
       prompt:
@@ -49,8 +50,11 @@ jobs:
           python -m pip install --upgrade pip requests
           python -m pip install vastai
       - name: Validate runner script syntax
-        run: python -m py_compile scripts/run_hunyuan_vast.py scripts/deepseek_agent.py scripts/hf_download_with_progress.py
+        run: |
+          python -m py_compile scripts/run_hunyuan_vast.py scripts/deepseek_agent.py scripts/hf_download_with_progress.py
           bash -n scripts/run_hunyuan_t2v_16gb.sh
+          grep -Fq 'SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"' scripts/run_hunyuan_t2v_16gb.sh
+          grep -Fq '"$SCRIPT_DIR/hf_download_with_progress.py"' scripts/run_hunyuan_t2v_16gb.sh
       - name: Validate limits before provisioning
         env:
           BUDGET: ${{ inputs.budget_usd || '0.50' }}
