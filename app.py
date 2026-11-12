@@ -13,6 +13,7 @@ ROADMAP=(PROJECT_ROOT/"docs"/"ROADMAP.md").read_text(encoding="utf-8")
 CAPTURE=(PROJECT_ROOT/"docs"/"DATA_CAPTURE.md").read_text(encoding="utf-8")
 BLENDER=(PROJECT_ROOT/"docs"/"BLENDER_QUICKSTART.md").read_text(encoding="utf-8")
 TRAINING=(PROJECT_ROOT/"docs"/"TRAINING.md").read_text(encoding="utf-8")
+SHONA=(PROJECT_ROOT/"docs"/"SHONA_ENGINE.md").read_text(encoding="utf-8")
 
 def inspect_dataset(path_text):
     p=Path(path_text).expanduser()
@@ -52,6 +53,7 @@ with gr.Blocks(title="NEO VIDEO GEN",theme=gr.themes.Soft()) as demo:
     with gr.Tab("Blender quick start"): gr.Markdown(BLENDER)
     with gr.Tab("Capture specification"): gr.Markdown(CAPTURE)
     with gr.Tab("Training guide"): gr.Markdown(TRAINING)
+    with gr.Tab("Shona Engine"): gr.Markdown(SHONA)
     with gr.Tab("Roadmap"): gr.Markdown(ROADMAP)
     with gr.Tab("Dataset inspector"):
         path=gr.Textbox(label="Dataset folder or manifest",value="./neo_data")
