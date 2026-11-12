@@ -1,5 +1,11 @@
 name: NEO Hunyuan T2V - 16GB RTX
 on:
+  push:
+    branches: [hunyuan-t2v-16gb]
+    paths:
+      - '.github/workflows/hunyuan-t2v-16gb.yml'
+      - 'scripts/run_hunyuan_vast.py'
+      - 'scripts/run_hunyuan_t2v_16gb.sh'
   workflow_dispatch:
     inputs:
       prompt:
@@ -42,6 +48,8 @@ jobs:
           sudo apt-get install -y openssh-client
           python -m pip install --upgrade pip requests
           python -m pip install vastai
+      - name: Validate runner script syntax
+        run: python -m py_compile scripts/run_hunyuan_vast.py
       - name: Validate limits before provisioning
         env:
           BUDGET: \${{ inputs.budget_usd }}
