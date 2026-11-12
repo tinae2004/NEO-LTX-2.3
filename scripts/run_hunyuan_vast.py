@@ -120,6 +120,8 @@ def main():
             'echo "[MODEL_DOWNLOAD_TELEMETRY]"; '
             'du -sb /workspace/neo-data/models/hunyuanvideo15/ckpts 2>/dev/null || true; '
             'df -h /workspace/neo-data 2>/dev/null | tail -n 1; '
+            'IFACE=$(ip -o route show default 2>/dev/null | awk \'{print $5; exit}\'); '
+            'if [ -n "$IFACE" ]; then RX=$(cat /sys/class/net/"$IFACE"/statistics/rx_bytes 2>/dev/null || echo 0); TX=$(cat /sys/class/net/"$IFACE"/statistics/tx_bytes 2>/dev/null || echo 0); echo "[NETWORK_BYTES] iface=$IFACE rx=$RX tx=$TX"; fi; '
             'sleep 20; done) & MONITOR=$!; '
             'wait "$PID"; RC=$?; kill "$MONITOR" 2>/dev/null; '
             'wait "$MONITOR" 2>/dev/null; exit "$RC"'
