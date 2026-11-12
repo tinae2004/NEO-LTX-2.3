@@ -1,0 +1,81 @@
+name: NEO Hunyuan T2V - 16GB RTX
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: Video prompt
+        required: true
+        type: string
+        default: "A cinematic wide shot of a Zimbabwean countryside at golden hour, a bus traveling along a dusty road, realistic natural lighting"
+      budget_usd:
+        description: Hard total budget in USD (maximum 1.00)
+        required: true
+        type: number
+        default: 0.50
+      max_hourly_usd:
+        description: Maximum GPU price per hour in USD (maximum 0.10)
+        required: true
+        type: number
+        default: 0.10
+      max_hours:
+        description: Maximum rental duration in hours (maximum 1.0)
+        required: true
+        type: number
+        default: 1.0
+permissions:
+  contents: read
+concurrency:
+  group: neo-hunyuan-t2v-16gb
+  cancel-in-progress: false
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 95
+    steps:
+      - name: Checkout Hunyuan branch
+        uses: actions/checkout@v4
+        with:
+          ref: hunyuan-t2v-16gb
+      - name: Install runner tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-client
+          python -m pip install --upgrade pip requests
+          python -m pip install vastai
+      - name: Validate runner script syntax
+        run: python -m py_compile scripts/run_hunyuan_vast.py
+      - name: Validate limits before provisioning
+        env:
+          BUDGET: \${{ inputs.budget_usd }}
+          HOURLY: \${{ inputs.max_hourly_usd }}
+          HOURS: \${{ inputs.max_hours }}
+        run: |
+          python - <<'PY'
+          import os
+          b=float(os.environ["BUDGET"]); h=float(os.environ["HOURLY"]); t=float(os.environ["HOURS"])
+          assert 0 < b <= 1.0, "Budget must be between $0 and $1"
+          assert 0 < h <= 0.10, "Hourly cap cannot exceed $0.10"
+          assert 0.25 <= t <= 1.0, "Runtime must be 0.25-1.0 hours"
+          assert h*t*1.25 <= b, "Budget must cover hourly cap x runtime plus 25% reserve"
+          PY
+      - name: Rent budget RTX and generate Hunyuan video
+        env:
+          VAST_API_KEY: \${{ secrets.VAST_API_KEY }}
+          VIDEO_PROMPT: \${{ inputs.prompt }}
+          BUDGET: \${{ inputs.budget_usd }}
+          HOURLY: \${{ inputs.max_hourly_usd }}
+          HOURS: \${{ inputs.max_hours }}
+        run: |
+          python scripts/run_hunyuan_vast.py \
+            --prompt "$VIDEO_PROMPT" \
+            --budget-usd "$BUDGET" \
+            --max-hourly-usd "$HOURLY" \
+            --max-hours "$HOURS"
+      - name: Upload generated video
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: neo-hunyuan-video
+          path: hunyuan-output/
+          if-no-files-found: warn
+          retention-days: 7
