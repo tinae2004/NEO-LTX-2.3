@@ -3,6 +3,9 @@
 # Run on a rented Vast.ai GPU. This script never calls the Vast API.
 set -Eeuo pipefail
 
+# Resolve helper scripts before changing into the upstream Hunyuan repository.
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
 PROMPT="${1:-}"
 if [[ -z "$PROMPT" ]]; then
   echo "Usage: $0 'Describe the video you want to generate'"
@@ -89,7 +92,7 @@ echo "DEPENDENCIES_INSTALL_COMPLETE"
 # Download checkpoints only when needed. Hugging Face downloads resume if interrupted.
 if [[ ! -d "$MODEL_DIR/transformer" && ! -f "$MODEL_DIR/.neo_hunyuan_base_downloaded" ]]; then
   echo "[2/7] DOWNLOADING HUNYUANVIDEO-1.5 BASE CHECKPOINTS..."
-  "$PYTHON_BIN" "$(dirname "$0")/hf_download_with_progress.py" tencent/HunyuanVideo-1.5 "$MODEL_DIR"
+  "$PYTHON_BIN" "$SCRIPT_DIR/hf_download_with_progress.py" tencent/HunyuanVideo-1.5 "$MODEL_DIR"
   touch "$MODEL_DIR/.neo_hunyuan_base_downloaded"
 else
   echo "Hunyuan base checkpoint folder already exists; skipping full download."
@@ -99,12 +102,12 @@ mkdir -p "$MODEL_DIR/text_encoder/llm" "$MODEL_DIR/text_encoder/byt5-small" "$MO
 
 if [[ ! -f "$MODEL_DIR/text_encoder/llm/config.json" ]]; then
   echo "[3/7] DOWNLOADING QWEN2.5-VL-7B TEXT ENCODER..."
-  "$PYTHON_BIN" "$(dirname "$0")/hf_download_with_progress.py" Qwen/Qwen2.5-VL-7B-Instruct "$MODEL_DIR/text_encoder/llm"
+  "$PYTHON_BIN" "$SCRIPT_DIR/hf_download_with_progress.py" Qwen/Qwen2.5-VL-7B-Instruct "$MODEL_DIR/text_encoder/llm"
 fi
 
 if [[ ! -f "$MODEL_DIR/text_encoder/byt5-small/config.json" ]]; then
   echo "[4/7] DOWNLOADING BYT5 TEXT ENCODER..."
-  "$PYTHON_BIN" "$(dirname "$0")/hf_download_with_progress.py" google/byt5-small "$MODEL_DIR/text_encoder/byt5-small"
+  "$PYTHON_BIN" "$SCRIPT_DIR/hf_download_with_progress.py" google/byt5-small "$MODEL_DIR/text_encoder/byt5-small"
 fi
 
 if [[ ! -d "$MODEL_DIR/text_encoder/Glyph-SDXL-v2/checkpoints" ]]; then
