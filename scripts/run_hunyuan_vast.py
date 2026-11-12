@@ -190,12 +190,12 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
     results=list(pool.map(fetch,range(4)))
 elapsed=time.monotonic()-start
 total=sum(x[0] for x in results)
-mbps=(total/1048576)/elapsed if elapsed>0 else 0
+mbps=(total/1_000_000)/elapsed if elapsed>0 else 0
 print(f'PRE_DOWNLOAD_SPEED_TEST bytes={total} elapsed_seconds={elapsed:.3f} download_MBps={mbps:.2f}',flush=True)
 if total < 120*1024*1024:
-    raise SystemExit('SPEED_TEST_INCOMPLETE')
+    raise SystemExit(f'SLOW_GPU_HOST: incomplete speed test ({total} bytes); rejecting host')
 if mbps < 65:
-    raise SystemExit(f'SLOW_GPU_HOST: {mbps:.2f} MB/s is below 65 MB/s')
+    raise SystemExit(f'SLOW_GPU_HOST: {mbps:.2f} MB/s is below the strict 65 MB/s minimum')
 PY"""
         speed_result=run(ssh_base+["bash -lc "+shlex.quote(speed_script)],env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,check=False,timeout=min(50,remaining_seconds("pre-download network speed test")))
         print(speed_result.stdout or "",flush=True)
@@ -205,7 +205,7 @@ PY"""
             if "SLOW_GPU_HOST" in (speed_result.stdout or ""):
                 persist_blacklist(selected,measured)
                 print(f"SLOW_HOST_RETRY_REQUIRED measured_MBps={measured:.2f} threshold_MBps=65",flush=True)
-                raise RuntimeError(f"Host download speed {measured:.2f} MB/s is below 65 MB/s. Host blacklisted; trying another GPU host.")
+                raise RuntimeError(f"Host failed strict 65 MB/s admission (measured {measured:.2f} MB/s or incomplete test). Host blacklisted; trying another GPU host.")
             raise RuntimeError(f"Pre-download speed test failed or was incomplete (exit={speed_result.returncode}); no model download started.")
         source=subprocess.Popen(["git","archive","--format=tar.gz","HEAD"],stdout=subprocess.PIPE)
         recv=subprocess.Popen(ssh_base+["bash -lc "+shlex.quote("mkdir -p /workspace/neo && tar -xzf - -C /workspace/neo")],stdin=source.stdout)
