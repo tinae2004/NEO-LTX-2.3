@@ -145,20 +145,21 @@ print(f"CUDA_STACK_READY torch={torch.__version__} cuda={torch.version.cuda} gpu
 PY
 echo "DEPENDENCIES_INSTALL_COMPLETE"
 
-# Push Xet downloads harder on high-bandwidth Vast hosts.
-# High-performance mode enables larger buffers and parallel transfers;
-# fixed download concurrency bypasses Xet's conservative adaptive ramp-up.
+# Use current hf-xet with its adaptive high-performance controller.
+# The previous fixed concurrency=32 overrode the high-performance controller
+# and capped parallel range downloads. Let Xet adapt up to its host/network limit.
+echo "[DOWNLOAD_TUNING] Updating hf-xet transfer engine..."
+"$PYTHON_BIN" -m pip install --upgrade --progress-bar on hf_xet
 export HF_XET_HIGH_PERFORMANCE=1
-export HF_XET_FIXED_DOWNLOAD_CONCURRENCY=32
-export HF_HUB_DOWNLOAD_TIMEOUT=180
+unset HF_XET_FIXED_DOWNLOAD_CONCURRENCY
+export HF_HUB_DOWNLOAD_TIMEOUT=300
 echo "HF_XET_HIGH_PERFORMANCE=$HF_XET_HIGH_PERFORMANCE"
-echo "HF_XET_FIXED_DOWNLOAD_CONCURRENCY=$HF_XET_FIXED_DOWNLOAD_CONCURRENCY"
+echo "HF_XET_FIXED_DOWNLOAD_CONCURRENCY=adaptive"
 "$PYTHON_BIN" - <<'PY'
-try:
-    import hf_xet
-    print(f"HF_XET_VERSION={getattr(hf_xet, '__version__', 'installed')}", flush=True)
-except Exception as exc:
-    raise SystemExit(f"ERROR: hf_xet is not installed; refusing slow fallback downloader: {exc}")
+import hf_xet
+from importlib.metadata import version
+print(f"HF_XET_VERSION={version('hf_xet')}", flush=True)
+print(f"HF_HUB_VERSION={version('huggingface_hub')}", flush=True)
 PY
 
 # Download only the model components used by this 480p text-to-video run.
