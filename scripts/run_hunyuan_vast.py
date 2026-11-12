@@ -202,11 +202,11 @@ PY"""
         if speed_result.returncode:
             match=re.search(r"download_MBps=([0-9.]+)",speed_result.stdout or "")
             measured=float(match.group(1)) if match else 0.0
-            if "SLOW_GPU_HOST" in (speed_result.stdout or ""):
-                persist_blacklist(selected,measured)
-                print(f"SLOW_HOST_RETRY_REQUIRED measured_MBps={measured:.2f} threshold_MBps=65",flush=True)
-                raise RuntimeError(f"Host failed strict 65 MB/s admission (measured {measured:.2f} MB/s or incomplete test). Host blacklisted; trying another GPU host.")
-            raise RuntimeError(f"Pre-download speed test failed or was incomplete (exit={speed_result.returncode}); no model download started.")
+            # A host is admissible only after a complete benchmark proves >=65 MB/s.
+            # Any failed/incomplete probe is rejected, blacklisted and retried.
+            persist_blacklist(selected,measured)
+            print(f"SLOW_HOST_RETRY_REQUIRED measured_MBps={measured:.2f} threshold_MBps=65",flush=True)
+            raise RuntimeError(f"Host failed strict 65 MB/s admission (measured {measured:.2f} MB/s or incomplete/failed test). Host blacklisted; trying another GPU host.")
         source=subprocess.Popen(["git","archive","--format=tar.gz","HEAD"],stdout=subprocess.PIPE)
         recv=subprocess.Popen(ssh_base+["bash -lc "+shlex.quote("mkdir -p /workspace/neo && tar -xzf - -C /workspace/neo")],stdin=source.stdout)
         source.stdout.close()
