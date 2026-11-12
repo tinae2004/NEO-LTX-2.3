@@ -145,8 +145,21 @@ print(f"CUDA_STACK_READY torch={torch.__version__} cuda={torch.version.cuda} gpu
 PY
 echo "DEPENDENCIES_INSTALL_COMPLETE"
 
-# Use Xet's high-throughput transfer mode for all subsequent Hugging Face downloads.
+# Push Xet downloads harder on high-bandwidth Vast hosts.
+# High-performance mode enables larger buffers and parallel transfers;
+# fixed download concurrency bypasses Xet's conservative adaptive ramp-up.
 export HF_XET_HIGH_PERFORMANCE=1
+export HF_XET_FIXED_DOWNLOAD_CONCURRENCY=32
+export HF_HUB_DOWNLOAD_TIMEOUT=180
+echo "HF_XET_HIGH_PERFORMANCE=$HF_XET_HIGH_PERFORMANCE"
+echo "HF_XET_FIXED_DOWNLOAD_CONCURRENCY=$HF_XET_FIXED_DOWNLOAD_CONCURRENCY"
+"$PYTHON_BIN" - <<'PY'
+try:
+    import hf_xet
+    print(f"HF_XET_VERSION={getattr(hf_xet, '__version__', 'installed')}", flush=True)
+except Exception as exc:
+    raise SystemExit(f"ERROR: hf_xet is not installed; refusing slow fallback downloader: {exc}")
+PY
 
 # Download only the model components used by this 480p text-to-video run.
 # The complete upstream transformer directory is hundreds of GB and includes
@@ -156,7 +169,7 @@ VAE_WEIGHT="$MODEL_DIR/vae/diffusion_pytorch_model.safetensors"
 if [[ ! -s "$T2V_WEIGHT" || ! -s "$VAE_WEIGHT" || ! -f "$MODEL_DIR/transformer/480p_t2v/config.json" ]]; then
   echo "[2/7] DOWNLOADING ONLY HUNYUANVIDEO-1.5 480P T2V + VAE CHECKPOINTS..."
   "$PYTHON_BIN" "$SCRIPT_DIR/hf_download_with_progress.py" tencent/HunyuanVideo-1.5 "$MODEL_DIR" \
-    --max-workers 8 \
+    --max-workers 16 \
     --allow config.json model_index.json 'scheduler/**' 'transformer/480p_t2v/**' 'vae/**'
   test -s "$T2V_WEIGHT" || { echo "ERROR: 480p T2V transformer checkpoint is missing/empty."; exit 1; }
   test -s "$VAE_WEIGHT" || { echo "ERROR: Hunyuan VAE checkpoint is missing/empty."; exit 1; }
