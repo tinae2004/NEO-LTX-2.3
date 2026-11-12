@@ -17,9 +17,9 @@ No model is trained by these scripts. They establish traceable, auditable traini
 
 ## Initial sources to inspect
 
-1. `google/WaxalNLP` — Google reports WAXAL is released under CC-BY-4.0. Inspect the exact Shona configs and their task type before use. The corpus contains both ASR and TTS resources, but do not assume every Shona recording is a TTS-quality single-speaker sample.
-2. `Teleagents/zimbabwe-all-speech` — a useful source-attributed index reporting 596+ hours of Shona material, including human-labelled WAXAL, pseudo-labelled WAXAL, Bible readings and FLEURS. Its aggregate license is marked `other`; check upstream terms and obtain confirmation for commercial training before ingestion or redistribution.
-3. `manassehzw/sna-dataset` — a cleaned WAXAL-derived corpus. It reports 86.2 hours and CC-BY-4.0, but it is derived from WAXAL and must not be counted as independent additional audio.
+1. `google/WaxalNLP`, config `sna_asr` — the official card names this exact Shona ASR config and uses the `transcription` and `audio` fields. Its Shona ASR source is attributed to Digital Umuganda and is listed as CC-BY-SA-4.0. This is ASR speech, not a Shona TTS set. The WAXAL TTS config examples are for other languages; the card does not list Shona in its TTS language table. Do not treat this as a ready-made Shona voice-cloning corpus.
+2. `Teleagents/zimbabwe-all-speech` — source-attributed collection reporting 596+ hours of Shona data across `shona_waxal`, `shona_waxal_pseudo`, `shona_bible` and `shona_fleurs`. The pseudo transcripts are not human ground truth. Its aggregate license is marked `other`; inspect each upstream source and obtain written clearance for commercial training before ingestion.
+3. `manassehzw/sna-dataset` — a cleaned WAXAL-derived corpus reporting 86.2 hours and 16,980 clips. It inherits WAXAL lineage; do not count it as independent additional audio, and verify the effective upstream license before commercial use. Its published card notes speaker overlap across splits, so do not use its default splits as a final leakage-free benchmark.
 4. `Professor/shona-speech-data` — reports 83.7 hours from Afrivoice; verify the dataset card and upstream license before use.
 
 ## Critical data rules
@@ -61,6 +61,6 @@ The ingestion command deliberately requires explicit license review. It does not
 
 Use these controlled labels: `zezuru`, `karanga`, `manyika`, `korekore`, `ndau`, `unknown`. The first four are the core Shona variety targets. Ndau must retain its own label and may require a distinct language code/head depending on linguistic review. Do not fabricate a five-way balanced dataset from sources that do not expose those labels.
 
-## Training is a later milestone
+## ASR is not TTS\n\nThe WAXAL Shona `sna_asr` recordings are useful for speech recognition and pronunciation analysis. They do not automatically provide the clean, consistent, scripted, single-speaker data normally needed to adapt a high-quality TTS voice. For Shona TTS, NEO should recruit consenting native speakers and record a balanced script set with explicit commercial model-training consent, clean microphone technique, consistent recording conditions, and human-verified transcripts. Collect different speakers and varieties separately; do not claim a dialect is supported until native speakers evaluate it.\n\n## Training is a later milestone
 
 After collecting a rights-cleared, speaker-disjoint and human-reviewed seed corpus, benchmark candidate TTS architectures. Compare pronunciation, intelligibility, naturalness, dialect fidelity, speaker consistency and inference speed. Do not choose a model family just because it is popular or because a tiny demo checkpoint exists. Hunyuan fine-tuning is a separate visual-language experiment and will not teach its video transformer to speak.
