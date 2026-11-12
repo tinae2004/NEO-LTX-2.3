@@ -87,7 +87,7 @@ cd "$REPO_DIR"
 # Download checkpoints only when needed. Hugging Face downloads resume if interrupted.
 if [[ ! -d "$MODEL_DIR/transformer" && ! -f "$MODEL_DIR/.neo_hunyuan_base_downloaded" ]]; then
   echo "Downloading HunyuanVideo-1.5 checkpoints..."
-  huggingface-cli download tencent/HunyuanVideo-1.5 --local-dir "$MODEL_DIR"
+  "$PYTHON_BIN" -c 'from huggingface_hub import snapshot_download; import sys; snapshot_download(repo_id=sys.argv[1], local_dir=sys.argv[2])' tencent/HunyuanVideo-1.5 "$MODEL_DIR"
   touch "$MODEL_DIR/.neo_hunyuan_base_downloaded"
 else
   echo "Hunyuan base checkpoint folder already exists; skipping full download."
@@ -97,12 +97,12 @@ mkdir -p "$MODEL_DIR/text_encoder/llm" "$MODEL_DIR/text_encoder/byt5-small" "$MO
 
 if [[ ! -f "$MODEL_DIR/text_encoder/llm/config.json" ]]; then
   echo "Downloading Qwen2.5-VL-7B text encoder..."
-  huggingface-cli download Qwen/Qwen2.5-VL-7B-Instruct --local-dir "$MODEL_DIR/text_encoder/llm"
+  "$PYTHON_BIN" -c 'from huggingface_hub import snapshot_download; import sys; snapshot_download(repo_id=sys.argv[1], local_dir=sys.argv[2])' Qwen/Qwen2.5-VL-7B-Instruct "$MODEL_DIR/text_encoder/llm"
 fi
 
 if [[ ! -f "$MODEL_DIR/text_encoder/byt5-small/config.json" ]]; then
   echo "Downloading ByT5 text encoder..."
-  huggingface-cli download google/byt5-small --local-dir "$MODEL_DIR/text_encoder/byt5-small"
+  "$PYTHON_BIN" -c 'from huggingface_hub import snapshot_download; import sys; snapshot_download(repo_id=sys.argv[1], local_dir=sys.argv[2])' google/byt5-small "$MODEL_DIR/text_encoder/byt5-small"
 fi
 
 if [[ ! -d "$MODEL_DIR/text_encoder/Glyph-SDXL-v2/checkpoints" ]]; then
