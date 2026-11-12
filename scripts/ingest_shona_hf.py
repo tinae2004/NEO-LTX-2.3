@@ -30,7 +30,7 @@ def main() -> None:
     parser.add_argument("--config", required=True, help="Exact dataset configuration name")
     parser.add_argument("--split", default="train")
     parser.add_argument("--audio-column", default="audio")
-    parser.add_argument("--text-column", required=True, help="Exact transcript column name")
+    parser.add_argument("--text-column", default="transcription", help="Exact transcript column name (WAXAL sna_asr uses transcription)")
     parser.add_argument("--speaker-column", default="speaker_id")
     parser.add_argument("--variety-column", default=None, help="Optional source column with reviewed variety labels")
     parser.add_argument("--variety", choices=["zezuru", "karanga", "manyika", "korekore", "ndau", "unknown"], default="unknown")
@@ -86,7 +86,7 @@ def main() -> None:
             continue
         try:
             samples = np.asarray(audio["array"], dtype=np.float32)
-            sample_rate = int(audio["sampling_rate"])
+            sample_rate = int(audio.get("sampling_rate") or audio.get("sample_rate") or 0)
             if samples.ndim == 2:
                 channel_axis = 0 if samples.shape[0] <= 8 else 1
                 samples = samples.mean(axis=channel_axis)
@@ -124,7 +124,7 @@ def main() -> None:
                 "duration_seconds": round(float(samples.size / sample_rate), 4),
                 "sample_rate": sample_rate,
                 "audio_sha256": sha256_file(target),
-                "source_row_index": index,
+                "source_row_index": index,\n                "source_speaker_id": str(row.get(args.speaker_column, "unknown")),\n                "source_gender": str(row.get("gender", "unknown")),
             }
             append_jsonl(manifest, record)
             existing_ids.add(stable)
