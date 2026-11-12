@@ -7,7 +7,11 @@ import requests
 
 API="https://console.vast.ai/api/v0"
 def run(cmd, timeout=60, check=True, **kw):
-    return subprocess.run(cmd, text=True, timeout=timeout, check=check, **kw)
+    # Allow call sites to override subprocess defaults without duplicate kwargs.
+    kw.setdefault("text", True)
+    kw.setdefault("timeout", timeout)
+    kw.setdefault("check", check)
+    return subprocess.run(cmd, **kw)
 
 def main():
     p=argparse.ArgumentParser()
