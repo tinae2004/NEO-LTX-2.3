@@ -44,3 +44,14 @@ Environment overrides:
 - It does not yet include queueing, authentication, billing, upload callbacks, or automatic GPU destruction.
 - Model downloads are large. Persist `NEO_DATA_DIR` across rentals to avoid downloading the weights every time.
 - Validate one successful generation and measure wall time, peak VRAM, system RAM, disk use and output quality before accepting customer jobs.
+
+
+## Automated budget-capped Vast run
+
+The workflow `.github/workflows/hunyuan-t2v-16gb.yml` uses the existing `VAST_API_KEY` repository secret. Open the repository's Actions tab, select **NEO Hunyuan T2V - 16GB RTX**, choose **Run workflow**, and enter the prompt and limits.
+
+The runner searches verified on-demand RTX 16GB-class offers (RTX 5060 Ti, 5070 Ti, 4070 Ti SUPER, 4080, 5080, or 4060 Ti), requires at least 14GB reported GPU memory, 48GB host RAM, 99% reliability, and enough disk. It refuses offers above $0.10/hour or outside the total budget. Defaults are $0.50 total, $0.10/hour maximum, and one hour maximum runtime. The 25% reserve is included in the budget check.
+
+The workflow uploads `hunyuan-output/hunyuan_t2v.mp4` as the `neo-hunyuan-video` artifact and requests instance destruction in a `finally` block. If the workflow is cancelled forcibly or the destroy request fails, inspect the Vast console and terminate any remaining instance manually.
+
+**Important:** A 16GB GPU is a constrained configuration. HunyuanVideo 1.5 documents a 14GB minimum with offloading; low host RAM, slow storage/network, or model download time can still cause the run to fail before producing a video. The workflow does not relax those limits or switch to a more expensive GPU automatically.
