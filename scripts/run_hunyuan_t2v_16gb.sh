@@ -60,7 +60,7 @@ cd "$REPO_DIR"
 # Install runtime dependencies into the active worker environment.
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-python -m pip install -U "huggingface_hub[cli]" modelscope
+python -m pip install -U "huggingface_hub[cli]" modelscope tencentcloud-sdk-python
 
 # Download checkpoints only when needed. Hugging Face downloads resume if interrupted.
 if [[ ! -d "$MODEL_DIR/transformer" && ! -f "$MODEL_DIR/.neo_hunyuan_base_downloaded" ]]; then
