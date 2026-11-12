@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Budget-capped Vast runner for HunyuanVideo 1.5 T2V."""
 from __future__ import annotations
-import argparse, os, re, shlex, shutil, subprocess, sys, tempfile, time, traceback
+import argparse, json, os, re, shlex, shutil, subprocess, sys, tempfile, time, traceback
 from pathlib import Path
 import requests
 
@@ -29,6 +29,60 @@ def main():
         r=s.request(method,API+path,json=payload,timeout=timeout)
         if not r.ok: raise RuntimeError(f"Vast API {method} {path}: HTTP {r.status_code} {r.text[:500]}")
         return r.json() if r.text.strip() else {}
+
+    blacklist_path=Path("gpu-host-blacklist.json")
+    try:
+        blacklist_data=json.loads(blacklist_path.read_text()) if blacklist_path.exists() else {"hosts":[]}
+    except Exception as exc:
+        raise RuntimeError(f"Cannot read GPU host blacklist safely: {exc}")
+    blocked=blacklist_data.get("hosts",[])
+    def host_identity(o):
+        geo=o.get("geolocation") or o.get("location") or {}
+        if not isinstance(geo,dict): geo={"raw":str(geo)}
+        machine=str(o.get("machine_id") or "")
+        host=str(o.get("host_id") or "")
+        parts=[machine,host,str(geo.get("country","")),str(geo.get("region","")),str(geo.get("city","")),
+               str(o.get("gpu_name","")),str(o.get("cpu_name","")),str(o.get("cpu_arch",""))]
+        return {"machine_id":machine,"host_id":host,"geolocation":geo,
+                "gpu_name":str(o.get("gpu_name","")),"cpu_name":str(o.get("cpu_name","")),
+                "cpu_arch":str(o.get("cpu_arch","")),"fingerprint":"|".join(parts)}
+    def is_blacklisted(o):
+        ident=host_identity(o)
+        for entry in blocked:
+            if ident["machine_id"] and entry.get("machine_id")==ident["machine_id"]: return True
+            if ident["host_id"] and entry.get("host_id")==ident["host_id"]: return True
+            if ident["fingerprint"] and entry.get("fingerprint")==ident["fingerprint"]: return True
+        return False
+    def persist_blacklist(offer, measured_mbps):
+        ident=host_identity(offer)
+        if not ident["machine_id"] and not ident["host_id"]:
+            raise RuntimeError("Cannot persistently blacklist slow host: Vast offer omitted machine_id and host_id.")
+        entry={**ident,"reason":"download speed below 90 MB/s","measured_MBps":round(measured_mbps,2),
+               "threshold_MBps":90,"blacklisted_at_utc":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime())}
+        if not any((entry["machine_id"] and x.get("machine_id")==entry["machine_id"]) or
+                   (entry["host_id"] and x.get("host_id")==entry["host_id"]) for x in blocked):
+            blocked.append(entry)
+        blacklist_data["hosts"]=blocked
+        token=os.environ.get("GITHUB_TOKEN","").strip()
+        repo=os.environ.get("GITHUB_REPOSITORY","")
+        branch=os.environ.get("GITHUB_REF_NAME","hunyuan-t2v-16gb")
+        if not token or not repo:
+            raise RuntimeError("GITHUB_TOKEN/GITHUB_REPOSITORY missing; cannot persist slow-host blacklist.")
+        gh=requests.Session()
+        gh.headers.update({"Authorization":f"Bearer {token}","Accept":"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"})
+        url=f"https://api.github.com/repos/{repo}/contents/gpu-host-blacklist.json"
+        current=gh.get(url,params={"ref":branch},timeout=30)
+        sha=None
+        if current.status_code==200: sha=current.json().get("sha")
+        elif current.status_code!=404: raise RuntimeError(f"Blacklist read failed: HTTP {current.status_code} {current.text[:300]}")
+        import base64
+        payload={"message":f"Blacklist slow Vast GPU host {ident['machine_id'] or ident['host_id']}",
+                 "content":base64.b64encode((json.dumps(blacklist_data,indent=2)+"\\n").encode()).decode(),
+                 "branch":branch}
+        if sha: payload["sha"]=sha
+        saved=gh.put(url,json=payload,timeout=30)
+        if not saved.ok: raise RuntimeError(f"Blacklist persistence failed: HTTP {saved.status_code} {saved.text[:500]}")
+        print(f"GPU_HOST_BLACKLISTED machine_id={ident['machine_id']} host_id={ident['host_id']} location={json.dumps(ident['geolocation'],sort_keys=True)} gpu={ident['gpu_name']} cpu={ident['cpu_name']} speed_MBps={measured_mbps:.2f}",flush=True)
     offers=api("POST","/bundles/",{
         "gpu_name":{"in":["RTX 5060 Ti","RTX 5070 Ti","RTX 4070 Ti SUPER","RTX 4080","RTX 5080","RTX 4060 Ti"]},
         "num_gpus":{"eq":1},"gpu_ram":{"gte":14},"cpu_ram":{"gte":48},
@@ -36,12 +90,17 @@ def main():
         "verified":{"eq":True},"rentable":{"eq":True},"type":"ondemand","limit":50
     }).get("offers",[])
     candidates=[]
+    skipped_blacklisted=0
     for o in offers:
         name=str(o.get("gpu_name","")).upper().replace("_"," ")
         rate=float(o.get("dph_total",o.get("dph",0)) or 0)
         if not any(n in name for n in ("RTX 5060 TI","RTX 5070 TI","RTX 4070 TI SUPER","RTX 4080","RTX 5080","RTX 4060 TI")): continue
         if rate<=0 or rate>a.max_hourly_usd or rate*a.max_hours*1.25>a.budget_usd: continue
+        if is_blacklisted(o):
+            skipped_blacklisted+=1
+            continue
         candidates.append((rate,-float(o.get("reliability",0) or 0),o))
+    print(f"GPU_HOST_BLACKLIST_LOADED={len(blocked)} matching_offers_skipped={skipped_blacklisted}",flush=True)
     candidates.sort(key=lambda x:(x[0],x[1]))
     if not candidates: raise SystemExit("No verified 16GB RTX offer meets all limits. No rental made.")
     out=Path(a.output_dir); out.mkdir(parents=True,exist_ok=True)
@@ -104,6 +163,42 @@ def main():
                 ssh_base=None
             time.sleep(min(10,remaining_seconds("SSH availability wait")))
         if not ssh_base: raise TimeoutError("SSH/NVIDIA preflight never became ready before the rental deadline.")
+        # Benchmark network before sending source code or downloading multi-GB models.
+        # Four concurrent 32 MiB streams = 128 MiB total benchmark traffic.
+        print("STARTING_PRE_DOWNLOAD_SPEED_TEST threshold_MBps=90 test_bytes=134217728",flush=True)
+        speed_script = r"""python3 - <<'PY'
+import concurrent.futures, time, urllib.request
+URL='https://speed.cloudflare.com/__down?bytes=33554432'
+def fetch(_):
+    req=urllib.request.Request(URL,headers={'User-Agent':'NEO-Hunyuan-Network-Probe/1.0','Cache-Control':'no-cache'})
+    start=time.monotonic(); total=0
+    with urllib.request.urlopen(req,timeout=25) as response:
+        while True:
+            chunk=response.read(1024*1024)
+            if not chunk: break
+            total += len(chunk)
+    return total, time.monotonic()-start
+start=time.monotonic()
+with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+    results=list(pool.map(fetch,range(4)))
+elapsed=time.monotonic()-start
+total=sum(x[0] for x in results)
+mbps=(total/1048576)/elapsed if elapsed>0 else 0
+print(f'PRE_DOWNLOAD_SPEED_TEST bytes={total} elapsed_seconds={elapsed:.3f} download_MBps={mbps:.2f}',flush=True)
+if total < 120*1024*1024:
+    raise SystemExit('SPEED_TEST_INCOMPLETE')
+if mbps < 90:
+    raise SystemExit(f'SLOW_GPU_HOST: {mbps:.2f} MB/s is below 90 MB/s')
+PY"""
+        speed_result=run(ssh_base+["bash -lc "+shlex.quote(speed_script)],env=env,capture_output=True,check=False,timeout=min(50,remaining_seconds("pre-download network speed test")))
+        print(speed_result.stdout or "",flush=True)
+        if speed_result.returncode:
+            match=re.search(r"download_MBps=([0-9.]+)",speed_result.stdout or "")
+            measured=float(match.group(1)) if match else 0.0
+            if "SLOW_GPU_HOST" in (speed_result.stdout or ""):
+                persist_blacklist(selected,measured)
+                raise RuntimeError(f"Host download speed {measured:.2f} MB/s is below 90 MB/s. Host blacklisted; destroying instance before model downloads.")
+            raise RuntimeError(f"Pre-download speed test failed or was incomplete (exit={speed_result.returncode}); no model download started.")
         source=subprocess.Popen(["git","archive","--format=tar.gz","HEAD"],stdout=subprocess.PIPE)
         recv=subprocess.Popen(ssh_base+["bash -lc "+shlex.quote("mkdir -p /workspace/neo && tar -xzf - -C /workspace/neo")],stdin=source.stdout)
         source.stdout.close()
