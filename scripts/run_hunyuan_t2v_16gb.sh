@@ -19,6 +19,25 @@ SEED="${SEED:-123}"
 
 mkdir -p "$NEO_DATA_DIR/repos" "$MODEL_DIR" "$OUTPUT_DIR"
 
+# Vast's PyTorch image may provide python3 but omit the "python" alias.
+PYTHON_BIN="$(command -v python3 || command -v python || true)"
+if [[ -z "$PYTHON_BIN" ]]; then
+  echo "Python is missing; installing Python 3 and pip..."
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-pip
+  else
+    echo "ERROR: No Python interpreter and apt-get is unavailable."
+    exit 1
+  fi
+  PYTHON_BIN="$(command -v python3 || true)"
+fi
+if [[ -z "$PYTHON_BIN" ]]; then
+  echo "ERROR: Python 3 installation did not provide python3."
+  exit 1
+fi
+echo "Using Python interpreter: $PYTHON_BIN"
+
 echo "== NEO HunyuanVideo 1.5 / 16GB T2V =="
 echo "Data directory: $NEO_DATA_DIR"
 echo "Output directory: $OUTPUT_DIR"
@@ -41,7 +60,7 @@ if [[ "$RAM_GB" -lt 48 ]]; then
   echo "WARNING: Less than 48GiB system RAM. CPU offloading may run out of memory."
 fi
 
-python - <<'PY'
+"$PYTHON_BIN" - <<'PY'
 import sys
 if sys.version_info < (3, 10):
     raise SystemExit("Python 3.10+ is required.")
@@ -58,9 +77,9 @@ fi
 cd "$REPO_DIR"
 
 # Install runtime dependencies into the active worker environment.
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -m pip install -U "huggingface_hub[cli]" modelscope tencentcloud-sdk-python
+"$PYTHON_BIN" -m pip install --upgrade pip
+"$PYTHON_BIN" -m pip install -r requirements.txt
+"$PYTHON_BIN" -m pip install -U "huggingface_hub[cli]" modelscope tencentcloud-sdk-python
 
 # Download checkpoints only when needed. Hugging Face downloads resume if interrupted.
 if [[ ! -d "$MODEL_DIR/transformer" && ! -f "$MODEL_DIR/.neo_hunyuan_base_downloaded" ]]; then
@@ -98,7 +117,13 @@ echo "Prompt: $PROMPT"
 echo "Frames: $VIDEO_LENGTH (~6 seconds at 24 fps) | Steps: $INFERENCE_STEPS"
 echo "Offloading: enabled | Super-resolution: disabled | Prompt rewrite: disabled"
 
-torchrun --nproc_per_node=1 generate.py \
+if command -v torchrun >/dev/null 2>&1; then
+  TORCHRUN=(torchrun)
+else
+  TORCHRUN=("$PYTHON_BIN" -m torch.distributed.run)
+fi
+
+"${TORCHRUN[@]}" --nproc_per_node=1 generate.py \
   --prompt "$PROMPT" \
   --image_path none \
   --resolution 480p \
