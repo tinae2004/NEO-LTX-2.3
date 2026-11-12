@@ -17,7 +17,7 @@ def test_remote_training_script_bootstraps_python_and_cuda_torch():
 
     assert "python3 -m venv --system-site-packages /workspace/neo/.venv" in script
     assert "source /workspace/neo/.venv/bin/activate" in script
-    assert "python3 -m pip install --no-deps -e ." in script
+    assert "python -m pip install --no-deps -e ." in script
     assert "python3-pip" not in script
     assert "apt-get install" not in script
     assert "torch.cuda.is_available()" in script
