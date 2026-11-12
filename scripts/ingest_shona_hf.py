@@ -124,7 +124,9 @@ def main() -> None:
                 "duration_seconds": round(float(samples.size / sample_rate), 4),
                 "sample_rate": sample_rate,
                 "audio_sha256": sha256_file(target),
-                "source_row_index": index,\n                "source_speaker_id": str(row.get(args.speaker_column, "unknown")),\n                "source_gender": str(row.get("gender", "unknown")),
+                "source_row_index": index,
+                "source_speaker_id": str(row.get(args.speaker_column, "unknown")),
+                "source_gender": str(row.get("gender", "unknown")),
             }
             append_jsonl(manifest, record)
             existing_ids.add(stable)
