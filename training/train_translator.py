@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader, Dataset
 from neo_video_gen.translator.model import MotionTranslator
 
 class MotionSamples(Dataset):
-    def __init__(self,path:Path)->None:
+    def __init__(self,path:Path,max_samples:int=0)->None:
         if not path.exists(): raise FileNotFoundError(path)
         with np.load(path) as data:
             self.joints=data["joints_3d"].astype("float32")
@@ -21,6 +21,15 @@ class MotionSamples(Dataset):
         if count==0: raise ValueError(f"Dataset split is empty: {path}")
         if not all(len(v)==count for v in (self.camera,self.actions,self.flow,self.visibility,self.depth)):
             raise ValueError("Dataset arrays have inconsistent sample counts")
+        if max_samples < 0:
+            raise ValueError("max_samples must be non-negative")
+        if max_samples:
+            self.joints=self.joints[:max_samples]
+            self.camera=self.camera[:max_samples]
+            self.actions=self.actions[:max_samples]
+            self.flow=self.flow[:max_samples]
+            self.visibility=self.visibility[:max_samples]
+            self.depth=self.depth[:max_samples]
     def __len__(self): return len(self.joints)
     def __getitem__(self,index):
         return (torch.from_numpy(self.joints[index]),torch.from_numpy(self.camera[index]),
@@ -57,6 +66,7 @@ def main():
     p.add_argument("--data",type=Path,required=True)
     p.add_argument("--output",type=Path,default=Path("runs/neo_motion_translator.pt"))
     p.add_argument("--epochs",type=int,default=10)
+    p.add_argument("--samples",type=int,default=0,help="Maximum training samples; 0 uses the full training split")
     p.add_argument("--batch-size",type=int,default=16)
     p.add_argument("--lr",type=float,default=2e-4)
     p.add_argument("--workers",type=int,default=0)
@@ -67,6 +77,7 @@ def main():
     p.add_argument("--resume",type=Path,default=None)
     a=p.parse_args()
     if a.epochs<1: raise ValueError("--epochs must be >= 1")
+    if a.samples<0: raise ValueError("--samples must be non-negative")
     if a.patience<0 or a.min_delta<0: raise ValueError("--patience and --min-delta must be non-negative")
     if a.device=="cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but no CUDA-enabled PyTorch device is available")
@@ -77,7 +88,8 @@ def main():
     if device.type=="cuda":
         torch.backends.cuda.matmul.allow_tf32=True
         torch.backends.cudnn.benchmark=True
-    train=MotionSamples(a.data/"train.npz"); val=MotionSamples(a.data/"val.npz")
+    train=MotionSamples(a.data/"train.npz",max_samples=a.samples)
+    val=MotionSamples(a.data/"val.npz")
     train_loader=DataLoader(train,batch_size=a.batch_size,shuffle=True,num_workers=a.workers,
                              pin_memory=device.type=="cuda")
     val_loader=DataLoader(val,batch_size=a.batch_size,shuffle=False,num_workers=a.workers,
