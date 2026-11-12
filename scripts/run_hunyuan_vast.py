@@ -52,7 +52,8 @@ def main():
         for k,v in re.findall(r"(SSH_AUTH_SOCK|SSH_AGENT_PID)=([^;]+);",ag.stdout): env[k]=v
         if "SSH_AUTH_SOCK" not in env: raise RuntimeError("ssh-agent failed")
         agent=True
-        run(["vastai","set","api-key",key],env=env)\n        kp=temp/"key"; run(["ssh-keygen","-q","-t","ed25519","-N","","-f",str(kp)])
+        run(["vastai","set","api-key",key],env=env)
+        kp=temp/"key"; run(["ssh-keygen","-q","-t","ed25519","-N","","-f",str(kp)])
         run(["vastai","create","ssh-key",Path(str(kp)+".pub").read_text().strip()],env=env)
         selected=None; last=None
         for _,__,offer in candidates[:12]:
