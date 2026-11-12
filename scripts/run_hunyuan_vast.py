@@ -190,8 +190,8 @@ mbps=(total/1048576)/elapsed if elapsed>0 else 0
 print(f'PRE_DOWNLOAD_SPEED_TEST bytes={total} elapsed_seconds={elapsed:.3f} download_MBps={mbps:.2f}',flush=True)
 if total < 120*1024*1024:
     raise SystemExit('SPEED_TEST_INCOMPLETE')
-if mbps < 90:
-    raise SystemExit(f'SLOW_GPU_HOST: {mbps:.2f} MB/s is below 90 MB/s')
+if mbps < 65:
+    raise SystemExit(f'SLOW_GPU_HOST: {mbps:.2f} MB/s is below 65 MB/s')
 PY"""
         speed_result=run(ssh_base+["bash -lc "+shlex.quote(speed_script)],env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,check=False,timeout=min(50,remaining_seconds("pre-download network speed test")))
         print(speed_result.stdout or "",flush=True)
