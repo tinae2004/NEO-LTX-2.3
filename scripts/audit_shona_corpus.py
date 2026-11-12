@@ -20,7 +20,7 @@ def main() -> None:
     print(rendered)
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
-        args.report.write_text(rendered + "\\n", encoding="utf-8")
+        args.report.write_text(rendered + "\n", encoding="utf-8")
     if report["errors"]:
         raise SystemExit(1)
 
