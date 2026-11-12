@@ -145,6 +145,9 @@ print(f"CUDA_STACK_READY torch={torch.__version__} cuda={torch.version.cuda} gpu
 PY
 echo "DEPENDENCIES_INSTALL_COMPLETE"
 
+# Use Xet's high-throughput transfer mode for all subsequent Hugging Face downloads.
+export HF_XET_HIGH_PERFORMANCE=1
+
 # Download only the model components used by this 480p text-to-video run.
 # The complete upstream transformer directory is hundreds of GB and includes
 # unrelated I2V, 720p, SR and distilled checkpoints.
@@ -184,8 +187,6 @@ fi
 
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True,max_split_size_mb:128}"
 export TOKENIZERS_PARALLELISM=false
-# hf-xet 1.7+ adapts buffering to available memory in high-performance mode.
-export HF_XET_HIGH_PERFORMANCE=1
 
 OUTPUT_PATH="$OUTPUT_DIR/hunyuan_t2v_$(date -u +%Y%m%dT%H%M%S).mp4"
 
