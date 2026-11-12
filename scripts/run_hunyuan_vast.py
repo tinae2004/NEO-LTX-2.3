@@ -90,7 +90,7 @@ def main():
         elif current.status_code!=404: raise RuntimeError(f"Blacklist read failed: HTTP {current.status_code} {current.text[:300]}")
         import base64
         payload={"message":f"Blacklist slow Vast GPU host {ident['machine_id'] or ident['host_id']}",
-                 "content":base64.b64encode((json.dumps(blacklist_data,indent=2)+"\\n").encode()).decode(),
+                 "content":base64.b64encode((json.dumps(blacklist_data,indent=2)+"\n").encode()).decode(),
                  "branch":branch}
         if sha: payload["sha"]=sha
         saved=gh.put(url,json=payload,timeout=30)
