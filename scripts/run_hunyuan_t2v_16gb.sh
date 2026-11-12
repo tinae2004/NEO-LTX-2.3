@@ -82,32 +82,33 @@ fi
 
 cd "$REPO_DIR"
 
-# Reuse the CUDA-enabled PyTorch stack baked into the Vast PyTorch image.
-# Installing the pinned torch/torchvision/torchaudio wheels on every rental can
-# download several GB and replace a working CUDA stack.
-echo "[1/7] VERIFYING PREINSTALLED PYTORCH/CUDA STACK..."
-"$PYTHON_BIN" - <<'PY'
-import torch
-import torchvision
-import torchaudio
-from packaging.version import Version
-
-version = Version(torch.__version__.split("+")[0])
-if version < Version("2.6.0"):
-    raise SystemExit(f"Preinstalled PyTorch {version} is too old; need >=2.6.0")
-if not torch.cuda.is_available():
-    raise SystemExit("Preinstalled PyTorch cannot access CUDA; refusing to reinstall CUDA wheels on the paid GPU.")
-print(f"PREINSTALLED_TORCH={torch.__version__}", flush=True)
-print(f"PREINSTALLED_TORCHVISION={torchvision.__version__}", flush=True)
-print(f"PREINSTALLED_TORCHAUDIO={torchaudio.__version__}", flush=True)
-print(f"PYTORCH_CUDA={torch.version.cuda}", flush=True)
-print(f"GPU={torch.cuda.get_device_name(0)}", flush=True)
+# Reuse the CUDA-enabled PyTorch stack baked into the Vast PyTorch image
+# when it is already compatible; fall back to the upstream requirements only
+# when the base image does not provide a usable CUDA stack.
+echo "[1/7] CHECKING PREINSTALLED PYTORCH/CUDA STACK..."
+if "$PYTHON_BIN" - <<'PY'
+import sys
+try:
+    import torch
+    import torchvision
+    import torchaudio
+    from packaging.version import Version
+    version = Version(torch.__version__.split("+")[0])
+    if version < Version("2.6.0") or not torch.cuda.is_available():
+        raise RuntimeError(f"PyTorch {torch.__version__}, CUDA available={torch.cuda.is_available()}")
+    print(f"PREINSTALLED_TORCH={torch.__version__}", flush=True)
+    print(f"PREINSTALLED_TORCHVISION={torchvision.__version__}", flush=True)
+    print(f"PREINSTALLED_TORCHAUDIO={torchaudio.__version__}", flush=True)
+    print(f"PYTORCH_CUDA={torch.version.cuda}", flush=True)
+    print(f"GPU={torch.cuda.get_device_name(0)}", flush=True)
+except Exception as exc:
+    print(f"PREINSTALLED_CUDA_STACK_NOT_USABLE: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+    sys.exit(1)
 PY
-echo "PREINSTALLED_CUDA_STACK_VERIFIED"
-
-echo "Installing Hunyuan dependencies without replacing the working CUDA stack..."
-FILTERED_REQUIREMENTS="$NEO_DATA_DIR/requirements-hunyuan-no-torch.txt"
-"$PYTHON_BIN" - "$REPO_DIR/requirements.txt" "$FILTERED_REQUIREMENTS" <<'PY'
+then
+  echo "PREINSTALLED_CUDA_STACK_VERIFIED — preserving Torch/CUDA/cuDNN wheels."
+  FILTERED_REQUIREMENTS="$NEO_DATA_DIR/requirements-hunyuan-no-torch.txt"
+  "$PYTHON_BIN" - "$REPO_DIR/requirements.txt" "$FILTERED_REQUIREMENTS" <<'PY'
 import re
 import sys
 from pathlib import Path
@@ -121,17 +122,27 @@ for line in source.read_text().splitlines():
     if not stripped or stripped.startswith("#"):
         kept.append(line)
         continue
-    name = re.split(r"[<=>!~\[]", stripped, maxsplit=1)[0].strip().lower().replace("_", "-")
+    name = re.split(r"[<=>!~\\[]", stripped, maxsplit=1)[0].strip().lower().replace("_", "-")
     if name in skip:
         removed.append(stripped)
     else:
         kept.append(line)
-target.write_text("\n".join(kept) + "\n")
+target.write_text("\\n".join(kept) + "\\n")
 print("CUDA_PACKAGES_REUSED=" + ", ".join(removed), flush=True)
 print(f"NON_CUDA_REQUIREMENTS={sum(bool(x.strip()) and not x.lstrip().startswith('#') for x in kept)}", flush=True)
 PY
-"$PYTHON_BIN" -m pip install --progress-bar on -r "$FILTERED_REQUIREMENTS"
+  "$PYTHON_BIN" -m pip install --progress-bar on -r "$FILTERED_REQUIREMENTS"
+else
+  echo "FALLBACK: Base image lacks a working compatible CUDA stack; installing upstream pinned requirements."
+  "$PYTHON_BIN" -m pip install --progress-bar on -r requirements.txt
+fi
 "$PYTHON_BIN" -m pip install --progress-bar on tencentcloud-sdk-python
+"$PYTHON_BIN" - <<'PY'
+import torch
+if not torch.cuda.is_available():
+    raise SystemExit("ERROR: CUDA is still unavailable after dependency setup.")
+print(f"CUDA_STACK_READY torch={torch.__version__} cuda={torch.version.cuda} gpu={torch.cuda.get_device_name(0)}", flush=True)
+PY
 echo "DEPENDENCIES_INSTALL_COMPLETE"
 
 # Download only the model components used by this 480p text-to-video run.
