@@ -102,12 +102,24 @@ def main():
         recv=subprocess.Popen(ssh_base+["bash -lc "+shlex.quote("mkdir -p /workspace/neo && tar -xzf - -C /workspace/neo")],stdin=source.stdout)
         source.stdout.close()
         if recv.wait(timeout=300)!=0 or source.wait(timeout=60)!=0: raise RuntimeError("Source transfer failed.")
-        remote_cmd="cd /workspace/neo && chmod +x scripts/run_hunyuan_t2v_16gb.sh && ./scripts/run_hunyuan_t2v_16gb.sh "+shlex.quote(a.prompt)
+        # Stream remote generation output directly into the Actions log. The old
+        # capture_output=True buffered everything until the job ended.
+        script = "cd /workspace/neo && chmod +x scripts/run_hunyuan_t2v_16gb.sh && " + "./scripts/run_hunyuan_t2v_16gb.sh " + shlex.quote(a.prompt)
+        remote_cmd = (
+            "set +e; LOG=/tmp/neo-hunyuan-generation.log; STATUS=/tmp/neo-hunyuan-generation.status; "
+            "rm -f \\"$LOG\\" \\"$STATUS\\"; "
+            "(" + script + " >\\\"$LOG\\\" 2>&1; echo $? > \\"$STATUS\\") & PID=$!; "
+            "tail -n +1 -f \\"$LOG\\" & TAILPID=$!; "
+            "while kill -0 $PID 2>/dev/null; do "
+            "echo '[GPU_TELEMETRY]'; "
+            "nvidia-smi --query-gpu=name,utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader 2>&1; "
+            "sleep 20; done; "
+            "wait $PID; RC=$?; kill $TAILPID 2>/dev/null; wait $TAILPID 2>/dev/null; "
+            "if [ -f \\"$STATUS\\" ]; then RC=$(cat \\"$STATUS\\"); fi; exit $RC"
+        )
         remaining=max(60,int(deadline-time.monotonic()))
-        print("STARTING_HUNYUAN_GENERATION",flush=True)
-        result=run(ssh_base+["bash -lc "+shlex.quote(remote_cmd)],env=env,timeout=remaining,capture_output=True,check=False)
-        print(result.stdout[-12000:],flush=True)
-        if result.stderr: print(result.stderr[-6000:],file=sys.stderr,flush=True)
+        print("STARTING_HUNYUAN_GENERATION_WITH_LIVE_LOGS_AND_GPU_TELEMETRY",flush=True)
+        result=run(ssh_base+["bash -lc "+shlex.quote(remote_cmd)],env=env,timeout=remaining,check=False)
         if result.returncode: raise RuntimeError(f"Hunyuan generation exited with code {result.returncode}")
         found=run(ssh_base+["bash -lc "+shlex.quote("find /workspace/neo-data/outputs/hunyuan -maxdepth 1 -type f -name '*.mp4' -print -quit")],env=env,capture_output=True).stdout.strip()
         if not found: raise RuntimeError("Generation completed but no MP4 was found.")
