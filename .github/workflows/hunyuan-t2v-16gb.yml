@@ -52,9 +52,9 @@ jobs:
         run: python -m py_compile scripts/run_hunyuan_vast.py
       - name: Validate limits before provisioning
         env:
-          BUDGET: ${{ inputs.budget_usd }}
-          HOURLY: ${{ inputs.max_hourly_usd }}
-          HOURS: ${{ inputs.max_hours }}
+          BUDGET: ${{ inputs.budget_usd || '0.50' }}
+          HOURLY: ${{ inputs.max_hourly_usd || '0.10' }}
+          HOURS: ${{ inputs.max_hours || '1.0' }}
         run: |
           python - <<'PY'
           import os
@@ -65,12 +65,13 @@ jobs:
           assert h*t*1.25 <= b, "Budget must cover hourly cap x runtime plus 25% reserve"
           PY
       - name: Rent budget RTX and generate Hunyuan video
+        if: github.event_name == 'workflow_dispatch'
         env:
           VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
           VIDEO_PROMPT: ${{ inputs.prompt }}
-          BUDGET: ${{ inputs.budget_usd }}
-          HOURLY: ${{ inputs.max_hourly_usd }}
-          HOURS: ${{ inputs.max_hours }}
+          BUDGET: ${{ inputs.budget_usd || '0.50' }}
+          HOURLY: ${{ inputs.max_hourly_usd || '0.10' }}
+          HOURS: ${{ inputs.max_hours || '1.0' }}
         run: |
           python scripts/run_hunyuan_vast.py \
             --prompt "$VIDEO_PROMPT" \
