@@ -30,7 +30,7 @@ def main():
         if not r.ok: raise RuntimeError(f"Vast API {method} {path}: HTTP {r.status_code} {r.text[:500]}")
         return r.json() if r.text.strip() else {}
     offers=api("POST","/bundles/",{
-        "gpu_name":{"in":["RTX 5060 Ti","RTX 4070 Ti SUPER","RTX 4060 Ti"]},
+        "gpu_name":{"in":["RTX 5060 Ti","RTX 5070 Ti","RTX 4070 Ti SUPER","RTX 4080","RTX 5080","RTX 4060 Ti"]},
         "num_gpus":{"eq":1},"gpu_ram":{"gte":14},"cpu_ram":{"gte":48},
         "disk_space":{"gte":a.disk_gb},"reliability":{"gte":0.99},
         "verified":{"eq":True},"rentable":{"eq":True},"type":"ondemand","limit":50
@@ -39,7 +39,7 @@ def main():
     for o in offers:
         name=str(o.get("gpu_name","")).upper().replace("_"," ")
         rate=float(o.get("dph_total",o.get("dph",0)) or 0)
-        if not any(n in name for n in ("RTX 5060 TI","RTX 4070 TI SUPER","RTX 4060 TI")): continue
+        if not any(n in name for n in ("RTX 5060 TI","RTX 5070 TI","RTX 4070 TI SUPER","RTX 4080","RTX 5080","RTX 4060 TI")): continue
         if rate<=0 or rate>a.max_hourly_usd or rate*a.max_hours*1.25>a.budget_usd: continue
         candidates.append((rate,-float(o.get("reliability",0) or 0),o))
     candidates.sort(key=lambda x:(x[0],x[1]))
@@ -52,7 +52,7 @@ def main():
         for k,v in re.findall(r"(SSH_AUTH_SOCK|SSH_AGENT_PID)=([^;]+);",ag.stdout): env[k]=v
         if "SSH_AUTH_SOCK" not in env: raise RuntimeError("ssh-agent failed")
         agent=True
-        kp=temp/"key"; run(["ssh-keygen","-q","-t","ed25519","-N","","-f",str(kp)])
+        run(["vastai","set","api-key",key],env=env)\n        kp=temp/"key"; run(["ssh-keygen","-q","-t","ed25519","-N","","-f",str(kp)])
         run(["vastai","create","ssh-key",Path(str(kp)+".pub").read_text().strip()],env=env)
         selected=None; last=None
         for _,__,offer in candidates[:12]:
