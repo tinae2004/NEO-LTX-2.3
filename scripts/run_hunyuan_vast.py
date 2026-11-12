@@ -231,10 +231,20 @@ PY"""
         recv=subprocess.Popen(ssh_base+["bash -lc "+shlex.quote("mkdir -p /workspace/neo && tar -xzf - -C /workspace/neo")],stdin=source.stdout)
         source.stdout.close()
         if recv.wait(timeout=min(300,remaining_seconds("source transfer")))!=0 or source.wait(timeout=min(60,remaining_seconds("source archive completion")))!=0: raise RuntimeError("Source transfer failed.")
-        # Stream remote generation output directly into the Actions log. The old
-        # capture_output=True buffered everything until the job ended.
+        # Transfer HF credentials over SSH stdin into a mode-600 temporary
+        # file; never place the token in a command argument or Actions log.
+        hf_token = os.environ.get("HF_TOKEN", "").strip()
+        hf_token_file = f"/tmp/neo-hf-token-{instance}"
+        if hf_token:
+            token_write = run(ssh_base+["umask 077 && cat > "+shlex.quote(hf_token_file)],
+                              env=env, input=hf_token, capture_output=True,
+                              timeout=min(30,remaining_seconds("secure Hugging Face token transfer")))
+            if token_write.returncode:
+                raise RuntimeError("Could not securely transfer Hugging Face token to GPU.")
+        # Stream remote generation output directly into the Actions log.
         script = "cd /workspace/neo && chmod +x scripts/run_hunyuan_t2v_16gb.sh && " + "./scripts/run_hunyuan_t2v_16gb.sh " + shlex.quote(a.prompt)
         remote_cmd = (
+            ('if [ -f '+shlex.quote(hf_token_file)+' ]; then export HF_TOKEN="$(cat '+shlex.quote(hf_token_file)+')"; rm -f '+shlex.quote(hf_token_file)+'; fi; ' if hf_token else '') +
             'LOG=/tmp/neo-hunyuan-generation.log; '
             '(' + script + ') > >(tee "$LOG") 2>&1 & PID=$!; '
             '(while kill -0 "$PID" 2>/dev/null; do '
@@ -271,7 +281,9 @@ PY"""
                     print(f"{label}:\\n{value[-12000:]}", file=sys.stderr, flush=True)
         print("NEO_HUNYUAN_FAILURE\\n"+failure, file=sys.stderr, flush=True)
         # Stop paid compute before asking DeepSeek to diagnose the failure.
-        slow_host_retry = "SLOW_HOST_RETRY_REQUIRED" in failure
+        hf_download_failure = ("SLOW_HF_DOWNLOAD_HOST" in failure or "HF_DOWNLOAD_STALLED" in failure)
+        slow_host_retry = ("SLOW_HOST_RETRY_REQUIRED" in failure) or hf_download_failure
+        hf_speed_match = re.search(r"SLOW_HF_DOWNLOAD_HOST: ([0-9.]+) MB/s", failure)
         if instance is not None:
             try:
                 print(f"DESTROYING_INSTANCE_BEFORE_DIAGNOSIS={instance}",flush=True)
@@ -285,6 +297,13 @@ PY"""
                     instance=None
                 else:
                     print(f"CRITICAL_DESTROY_FAILURE instance={instance}: {destroy_error}",file=sys.stderr,flush=True)
+        if hf_download_failure and selected is not None:
+            measured_hf_speed = float(hf_speed_match.group(1)) if hf_speed_match else 0.0
+            try:
+                persist_blacklist(selected, measured_hf_speed)
+                print(f"HF_SLOW_HOST_BLACKLISTED measured_MBps={measured_hf_speed:.2f} threshold_MBps=65",flush=True)
+            except Exception as blacklist_error:
+                print(f"WARNING: Could not persist HF slow-host blacklist: {blacklist_error}",file=sys.stderr,flush=True)
         context = (
             f"Workflow: NEO HunyuanVideo 1.5 T2V\\nPrompt: {a.prompt}\\n"
             f"Budget USD: {a.budget_usd}; max hourly USD: {a.max_hourly_usd}; "
