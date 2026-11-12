@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Budget-capped Vast runner for HunyuanVideo 1.5 T2V."""
 from __future__ import annotations
-import argparse, os, re, shlex, shutil, subprocess, sys, tempfile, time
+import argparse, os, re, shlex, shutil, subprocess, sys, tempfile, time, traceback
 from pathlib import Path
 import requests
 
@@ -116,6 +116,38 @@ def main():
             cp=run(ssh_base+["cat "+shlex.quote(found)],env=env,stdout=f,stderr=subprocess.PIPE,timeout=300,check=False)
         if cp.returncode or local.stat().st_size==0: raise RuntimeError("Failed to download generated MP4.")
         print(f"VIDEO_OUTPUT={local} BYTES={local.stat().st_size}",flush=True)
+    except Exception as exc:
+        failure = traceback.format_exc()
+        if isinstance(exc, subprocess.TimeoutExpired):
+            for label, value in (("TIMEOUT_STDOUT", exc.stdout), ("TIMEOUT_STDERR", exc.stderr)):
+                if value:
+                    if isinstance(value, bytes): value=value.decode("utf-8", errors="replace")
+                    print(f"{label}:\\n{value[-12000:]}", file=sys.stderr, flush=True)
+        print("NEO_HUNYUAN_FAILURE\\n"+failure, file=sys.stderr, flush=True)
+        # Stop paid compute before asking DeepSeek to diagnose the failure.
+        if instance is not None:
+            try:
+                print(f"DESTROYING_INSTANCE_BEFORE_DIAGNOSIS={instance}",flush=True)
+                api("DELETE",f"/instances/{instance}/")
+                print("DESTROY_REQUEST_ACCEPTED",flush=True)
+                instance=None
+            except Exception as destroy_error:
+                print(f"CRITICAL_DESTROY_FAILURE instance={instance}: {destroy_error}",file=sys.stderr,flush=True)
+        context = (
+            f"Workflow: NEO HunyuanVideo 1.5 T2V\\nPrompt: {a.prompt}\\n"
+            f"Budget USD: {a.budget_usd}; max hourly USD: {a.max_hourly_usd}; "
+            f"max hours: {a.max_hours}\\nGPU instance: {instance or 'destroy requested'}\\n"
+            "Policy: never raise budget or runtime caps. GPU must be destroyed on every failure. "
+            "Give diagnosis and minimal fix; do not claim code was changed."
+        )
+        if os.environ.get("DEEPSEEK_API_KEY","").strip():
+            advisor = run([sys.executable,"scripts/deepseek_agent.py","--error",failure,"--context",context],
+                          capture_output=True,check=False,timeout=55)
+            if advisor.stdout: print(advisor.stdout[-12000:],flush=True)
+            if advisor.stderr: print(advisor.stderr[-4000:],file=sys.stderr,flush=True)
+        else:
+            print("DEEPSEEK_DIAGNOSIS_SKIPPED: DEEPSEEK_API_KEY GitHub Actions secret is not configured.",flush=True)
+        raise
     finally:
         if instance is not None:
             try:
