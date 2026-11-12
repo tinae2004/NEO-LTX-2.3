@@ -13,7 +13,7 @@ NEO_DATA_DIR="${NEO_DATA_DIR:-/workspace/neo-data}"
 REPO_DIR="$NEO_DATA_DIR/repos/HunyuanVideo-1.5"
 MODEL_DIR="$NEO_DATA_DIR/models/hunyuanvideo15/ckpts"
 OUTPUT_DIR="$NEO_DATA_DIR/outputs/hunyuan"
-VIDEO_LENGTH="${VIDEO_LENGTH:-49}"       # 49 frames ~= 2 seconds at 24 fps
+VIDEO_LENGTH="${VIDEO_LENGTH:-145}"      # 145 frames ~= 6 seconds at 24 fps
 INFERENCE_STEPS="${INFERENCE_STEPS:-50}"
 SEED="${SEED:-123}"
 
@@ -95,7 +95,7 @@ OUTPUT_PATH="$OUTPUT_DIR/hunyuan_t2v_$(date -u +%Y%m%dT%H%M%S).mp4"
 
 echo "Starting 480p text-to-video generation..."
 echo "Prompt: $PROMPT"
-echo "Frames: $VIDEO_LENGTH | Steps: $INFERENCE_STEPS"
+echo "Frames: $VIDEO_LENGTH (~6 seconds at 24 fps) | Steps: $INFERENCE_STEPS"
 echo "Offloading: enabled | Super-resolution: disabled | Prompt rewrite: disabled"
 
 torchrun --nproc_per_node=1 generate.py \
