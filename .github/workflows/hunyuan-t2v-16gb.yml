@@ -30,7 +30,7 @@ on:
         type: number
         default: 1.0
 permissions:
-  contents: read
+  contents: write
 concurrency:
   group: neo-hunyuan-t2v-16gb
   cancel-in-progress: false
@@ -74,6 +74,9 @@ jobs:
         env:
           VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: hunyuan-t2v-16gb
           VIDEO_PROMPT: ${{ inputs.prompt }}
           BUDGET: ${{ inputs.budget_usd || '0.50' }}
           HOURLY: ${{ inputs.max_hourly_usd || '0.10' }}
