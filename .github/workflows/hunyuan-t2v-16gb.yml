@@ -46,9 +46,9 @@ jobs:
         run: python -m py_compile scripts/run_hunyuan_vast.py
       - name: Validate limits before provisioning
         env:
-          BUDGET: \${{ inputs.budget_usd }}
-          HOURLY: \${{ inputs.max_hourly_usd }}
-          HOURS: \${{ inputs.max_hours }}
+          BUDGET: ${{ inputs.budget_usd }}
+          HOURLY: ${{ inputs.max_hourly_usd }}
+          HOURS: ${{ inputs.max_hours }}
         run: |
           python - <<'PY'
           import os
@@ -60,11 +60,11 @@ jobs:
           PY
       - name: Rent budget RTX and generate Hunyuan video
         env:
-          VAST_API_KEY: \${{ secrets.VAST_API_KEY }}
-          VIDEO_PROMPT: \${{ inputs.prompt }}
-          BUDGET: \${{ inputs.budget_usd }}
-          HOURLY: \${{ inputs.max_hourly_usd }}
-          HOURS: \${{ inputs.max_hours }}
+          VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+          VIDEO_PROMPT: ${{ inputs.prompt }}
+          BUDGET: ${{ inputs.budget_usd }}
+          HOURLY: ${{ inputs.max_hourly_usd }}
+          HOURS: ${{ inputs.max_hours }}
         run: |
           python scripts/run_hunyuan_vast.py \
             --prompt "$VIDEO_PROMPT" \
