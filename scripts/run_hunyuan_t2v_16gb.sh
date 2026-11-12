@@ -82,12 +82,12 @@ cd "$REPO_DIR"
 # Install runtime dependencies into the active worker environment.
 "$PYTHON_BIN" -m pip install --upgrade pip
 "$PYTHON_BIN" -m pip install -r requirements.txt
-"$PYTHON_BIN" -m pip install -U "huggingface_hub[cli]" modelscope tencentcloud-sdk-python
+"$PYTHON_BIN" -m pip install -U "huggingface_hub==0.34.0" modelscope tencentcloud-sdk-python
 
 # Download checkpoints only when needed. Hugging Face downloads resume if interrupted.
 if [[ ! -d "$MODEL_DIR/transformer" && ! -f "$MODEL_DIR/.neo_hunyuan_base_downloaded" ]]; then
   echo "Downloading HunyuanVideo-1.5 checkpoints..."
-  hf download tencent/HunyuanVideo-1.5 --local-dir "$MODEL_DIR"
+  huggingface-cli download tencent/HunyuanVideo-1.5 --local-dir "$MODEL_DIR"
   touch "$MODEL_DIR/.neo_hunyuan_base_downloaded"
 else
   echo "Hunyuan base checkpoint folder already exists; skipping full download."
@@ -97,12 +97,12 @@ mkdir -p "$MODEL_DIR/text_encoder/llm" "$MODEL_DIR/text_encoder/byt5-small" "$MO
 
 if [[ ! -f "$MODEL_DIR/text_encoder/llm/config.json" ]]; then
   echo "Downloading Qwen2.5-VL-7B text encoder..."
-  hf download Qwen/Qwen2.5-VL-7B-Instruct --local-dir "$MODEL_DIR/text_encoder/llm"
+  huggingface-cli download Qwen/Qwen2.5-VL-7B-Instruct --local-dir "$MODEL_DIR/text_encoder/llm"
 fi
 
 if [[ ! -f "$MODEL_DIR/text_encoder/byt5-small/config.json" ]]; then
   echo "Downloading ByT5 text encoder..."
-  hf download google/byt5-small --local-dir "$MODEL_DIR/text_encoder/byt5-small"
+  huggingface-cli download google/byt5-small --local-dir "$MODEL_DIR/text_encoder/byt5-small"
 fi
 
 if [[ ! -d "$MODEL_DIR/text_encoder/Glyph-SDXL-v2/checkpoints" ]]; then
