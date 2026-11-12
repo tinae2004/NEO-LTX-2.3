@@ -147,7 +147,7 @@ test -s datasets/combined_v1/train.npz
 test -s datasets/combined_v1/val.npz
 
 echo '=== Train baseline on CUDA; save best and latest checkpoints ==='
-python training/train_translator.py --data datasets/combined_v1 --epochs {epochs} --batch-size 64 --workers 4 --device cuda --patience 12 --min-delta 0.0001 --seed 20261111 --output artifacts/neo_fastframe_motion.pt 2>&1 | tee logs/gpu_training.log
+python training/train_translator.py --data datasets/combined_v1 --epochs {epochs} --samples {samples} --batch-size 64 --workers 4 --device cuda --patience 12 --min-delta 0.0001 --seed 20261111 --output artifacts/neo_fastframe_motion.pt 2>&1 | tee logs/gpu_training.log
 
 echo '=== Verify outputs ==='
 test -s artifacts/neo_fastframe_motion.pt
