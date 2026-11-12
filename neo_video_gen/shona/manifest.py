@@ -10,7 +10,7 @@ DIALECTS = {"zezuru", "karanga", "manyika", "korekore", "ndau", "unknown"}
 LANGUAGES = {"sna", "ndc"}
 REQUIRED_FIELDS = {
     "sample_id", "audio_path", "text", "language", "variety", "speaker_id",
-    "source_dataset", "source_config", "source_split", "source_license",
+    "source_dataset", "source_config", "source_split", "source_license", "license_reference",
     "license_reviewed", "transcript_type", "transcript_verified", "duration_seconds",
     "sample_rate", "audio_sha256",
 }
@@ -41,6 +41,11 @@ def validate_record(record: dict[str, Any], root: str | Path | None = None) -> l
         errors.append("pseudo transcript cannot be marked verified without human review")
     if record.get("license_reviewed") is not True:
         errors.append("license has not been reviewed for this intended use")
+    if not str(record.get("license_reference", "")).strip():
+        errors.append("missing license_reference")
+    checksum = str(record.get("audio_sha256", ""))
+    if len(checksum) != 64 or any(ch not in "0123456789abcdef" for ch in checksum.lower()):
+        errors.append("audio_sha256 must be a 64-character SHA-256 hex digest")
     try:
         if float(record.get("duration_seconds", 0)) <= 0:
             errors.append("duration_seconds must be positive")
@@ -67,6 +72,8 @@ def audit_jsonl(path: str | Path, root: str | Path | None = None) -> dict[str, A
     transcript_counts: dict[str, int] = {}
     speakers: set[str] = set()
     total_seconds = 0.0
+    seen_ids: set[str] = set()
+    seen_audio: set[str] = set()
     errors: list[dict[str, Any]] = []
     rows = 0
     with Path(path).open("r", encoding="utf-8") as stream:
@@ -80,6 +87,16 @@ def audit_jsonl(path: str | Path, root: str | Path | None = None) -> dict[str, A
                 errors.append({"line": line_number, "errors": [f"invalid JSON: {exc}"]})
                 continue
             problems = validate_record(record, root=root)
+            sample_id = str(record.get("sample_id", ""))
+            audio_hash = str(record.get("audio_sha256", ""))
+            if sample_id and sample_id in seen_ids:
+                problems.append("duplicate sample_id")
+            if audio_hash and audio_hash in seen_audio:
+                problems.append("duplicate audio_sha256; possible mirrored/repeated recording")
+            if sample_id:
+                seen_ids.add(sample_id)
+            if audio_hash:
+                seen_audio.add(audio_hash)
             if problems:
                 errors.append({"line": line_number, "sample_id": record.get("sample_id"), "errors": problems})
             variety = str(record.get("variety", "unknown"))
