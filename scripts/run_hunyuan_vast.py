@@ -274,6 +274,19 @@ PY"""
         print(f"VIDEO_OUTPUT={local} BYTES={local.stat().st_size}",flush=True)
     except Exception as exc:
         failure = traceback.format_exc()
+        # Preserve the actual remote child-process log for DeepSeek before teardown.
+        if instance is not None and "ssh_base" in locals():
+            try:
+                remote_log = run(
+                    ssh_base + ["bash -lc " + shlex.quote("if [ -f /tmp/neo-hunyuan-generation.log ]; then tail -n 180 /tmp/neo-hunyuan-generation.log; else echo REMOTE_GENERATION_LOG_NOT_FOUND; fi")],
+                    env=env, capture_output=True, text=True, check=False, timeout=25
+                )
+                remote_tail = (remote_log.stdout or "")[-16000:]
+                if remote_tail:
+                    failure += "\\nREMOTE_GPU_LOG_TAIL:\\n" + remote_tail
+                    print("REMOTE_GPU_LOG_TAIL_CAPTURED", flush=True)
+            except Exception as log_error:
+                failure += f"\\nREMOTE_GPU_LOG_CAPTURE_FAILED: {type(log_error).__name__}: {log_error}"
         if isinstance(exc, subprocess.TimeoutExpired):
             for label, value in (("TIMEOUT_STDOUT", exc.stdout), ("TIMEOUT_STDERR", exc.stderr)):
                 if value:
