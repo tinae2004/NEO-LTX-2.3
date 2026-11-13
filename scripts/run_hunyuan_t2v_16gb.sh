@@ -101,6 +101,17 @@ try:
     print(f"PREINSTALLED_TORCHAUDIO={torchaudio.__version__}", flush=True)
     print(f"PYTORCH_CUDA={torch.version.cuda}", flush=True)
     print(f"GPU={torch.cuda.get_device_name(0)}", flush=True)
+    major, minor = torch.cuda.get_device_capability(0)
+    capability = f"sm_{major}{minor}"
+    arch_list = torch.cuda.get_arch_list()
+    print(f"GPU_COMPUTE_CAPABILITY={capability}", flush=True)
+    print(f"PYTORCH_ARCH_LIST={','.join(arch_list)}", flush=True)
+    if capability not in arch_list:
+        raise RuntimeError(f"PyTorch {torch.__version__} has no native kernel for {capability}; refusing GPU generation.")
+    probe = torch.randn((128, 128), device="cuda", dtype=torch.float16)
+    _ = probe @ probe
+    torch.cuda.synchronize()
+    print("CUDA_ARCHITECTURE_SMOKE_TEST=passed", flush=True)
 except Exception as exc:
     print(f"FATAL_CUDA_IMAGE_MISMATCH: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
     print("Refusing to download a multi-GB Torch wheel from PyPI. Use the pinned pytorch/pytorch CUDA image.", file=sys.stderr, flush=True)
@@ -137,7 +148,14 @@ PY
 import torch
 if not torch.cuda.is_available():
     raise SystemExit("ERROR: CUDA is still unavailable after dependency setup.")
-print(f"CUDA_STACK_READY torch={torch.__version__} cuda={torch.version.cuda} gpu={torch.cuda.get_device_name(0)}", flush=True)
+major, minor = torch.cuda.get_device_capability(0)
+capability = f"sm_{major}{minor}"
+if capability not in torch.cuda.get_arch_list():
+    raise SystemExit(f"ERROR: PyTorch has no native kernels for {capability}.")
+x = torch.randn((128, 128), device="cuda", dtype=torch.float16)
+_ = x @ x
+torch.cuda.synchronize()
+print(f"CUDA_STACK_READY torch={torch.__version__} cuda={torch.version.cuda} gpu={torch.cuda.get_device_name(0)} capability={capability}", flush=True)
 PY
 echo "DEPENDENCIES_INSTALL_COMPLETE"
 
