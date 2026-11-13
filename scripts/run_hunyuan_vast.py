@@ -144,7 +144,7 @@ def main():
                 attempted.add(offer_id)
                 try:
                     resp=api("PUT",f"/asks/{int(offer_id)}/",{
-                        "image":"vastai/pytorch:@vastai-automatic-tag","label":"NEO-Hunyuan-T2V-16GB",
+                        "image":"pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime","label":"NEO-Hunyuan-T2V-16GB",
                         "disk":a.disk_gb,"runtype":"ssh_direct","cancel_unavail":True})
                     instance=resp.get("new_contract")
                     if instance is None: raise RuntimeError(f"Rental response missing instance id: {resp}")
