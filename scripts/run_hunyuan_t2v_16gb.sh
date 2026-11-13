@@ -86,7 +86,7 @@ cd "$REPO_DIR"
 # when it is already compatible; fall back to the upstream requirements only
 # when the base image does not provide a usable CUDA stack.
 echo "[1/7] CHECKING PREINSTALLED PYTORCH/CUDA STACK..."
-if "$PYTHON_BIN" - <<'PY'
+"$PYTHON_BIN" - <<'PY'
 import sys
 try:
     import torch
@@ -102,13 +102,13 @@ try:
     print(f"PYTORCH_CUDA={torch.version.cuda}", flush=True)
     print(f"GPU={torch.cuda.get_device_name(0)}", flush=True)
 except Exception as exc:
-    print(f"PREINSTALLED_CUDA_STACK_NOT_USABLE: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+    print(f"FATAL_CUDA_IMAGE_MISMATCH: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+    print("Refusing to download a multi-GB Torch wheel from PyPI. Use the pinned pytorch/pytorch CUDA image.", file=sys.stderr, flush=True)
     sys.exit(1)
 PY
-then
-  echo "PREINSTALLED_CUDA_STACK_VERIFIED — preserving Torch/CUDA/cuDNN wheels."
-  FILTERED_REQUIREMENTS="$NEO_DATA_DIR/requirements-hunyuan-no-torch.txt"
-  "$PYTHON_BIN" - "$REPO_DIR/requirements.txt" "$FILTERED_REQUIREMENTS" <<'PY'
+echo "PREINSTALLED_CUDA_STACK_VERIFIED — preserving Torch/CUDA/cuDNN wheels."
+FILTERED_REQUIREMENTS="$NEO_DATA_DIR/requirements-hunyuan-no-torch.txt"
+"$PYTHON_BIN" - "$REPO_DIR/requirements.txt" "$FILTERED_REQUIREMENTS" <<'PY'
 import re
 import sys
 from pathlib import Path
@@ -122,20 +122,16 @@ for line in source.read_text().splitlines():
     if not stripped or stripped.startswith("#"):
         kept.append(line)
         continue
-    name = re.split(r"[<=>!~\[]", stripped, maxsplit=1)[0].strip().lower().replace("_", "-")
+    name = re.split(r"[<=>!~\\[]", stripped, maxsplit=1)[0].strip().lower().replace("_", "-")
     if name in skip:
         removed.append(stripped)
     else:
         kept.append(line)
-target.write_text("\n".join(kept) + "\n")
+target.write_text("\\n".join(kept) + "\\n")
 print("CUDA_PACKAGES_REUSED=" + ", ".join(removed), flush=True)
 print(f"NON_CUDA_REQUIREMENTS={sum(bool(x.strip()) and not x.lstrip().startswith('#') for x in kept)}", flush=True)
 PY
-  "$PYTHON_BIN" -m pip install --progress-bar on -r "$FILTERED_REQUIREMENTS"
-else
-  echo "FALLBACK: Base image lacks a working compatible CUDA stack; installing upstream pinned requirements."
-  "$PYTHON_BIN" -m pip install --progress-bar on -r requirements.txt
-fi
+"$PYTHON_BIN" -m pip install --progress-bar on -r "$FILTERED_REQUIREMENTS"
 "$PYTHON_BIN" -m pip install --progress-bar on tencentcloud-sdk-python
 "$PYTHON_BIN" - <<'PY'
 import torch
