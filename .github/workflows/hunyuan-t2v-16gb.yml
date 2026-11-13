@@ -75,7 +75,7 @@ jobs:
           VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_REF_NAME: hunyuan-t2v-16gb
           VIDEO_PROMPT: ${{ inputs.prompt }}
