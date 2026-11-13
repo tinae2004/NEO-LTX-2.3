@@ -62,6 +62,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         env:
           VAST_API_KEY: ${{ secrets.VAST_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           VIDEO_PROMPT: ${{ inputs.prompt }}
           BUDGET: ${{ inputs.budget_usd || '0.50' }}
           HOURLY: ${{ inputs.max_hourly_usd || '0.10' }}
