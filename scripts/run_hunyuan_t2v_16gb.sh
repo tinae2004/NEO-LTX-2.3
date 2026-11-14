@@ -85,7 +85,7 @@ cd "$REPO_DIR"
 # Reuse the CUDA-enabled PyTorch stack baked into the Vast PyTorch image
 # when it is already compatible; fall back to the upstream requirements only
 # when the base image does not provide a usable CUDA stack.
-echo "[1/7] CHECKING PREINSTALLED PYTORCH/CUDA STACK..."
+echo "[3/7] CHECKING PREINSTALLED PYTORCH/CUDA STACK..."
 "$PYTHON_BIN" - <<'PY'
 import sys
 try:
@@ -159,39 +159,20 @@ print(f"CUDA_STACK_READY torch={torch.__version__} cuda={torch.version.cuda} gpu
 PY
 echo "DEPENDENCIES_INSTALL_COMPLETE"
 
-# Use current hf-xet with its adaptive high-performance controller.
-# The previous fixed concurrency=32 overrode the high-performance controller
-# and capped parallel range downloads. Let Xet adapt up to its host/network limit.
-echo "[DOWNLOAD_TUNING] Updating hf-xet transfer engine..."
-"$PYTHON_BIN" -m pip install --upgrade --progress-bar on "hf_xet>=1.7.0"
-export HF_XET_HIGH_PERFORMANCE=1
-unset HF_XET_FIXED_DOWNLOAD_CONCURRENCY
-export HF_HUB_DOWNLOAD_TIMEOUT=300
-export HF_XET_CLIENT_AC_LOGGING_INTERVAL_MS=10000
-echo "HF_XET_HIGH_PERFORMANCE=$HF_XET_HIGH_PERFORMANCE"
-echo "HF_XET_FIXED_DOWNLOAD_CONCURRENCY=adaptive"
-echo "HF_XET_CLIENT_AC_LOGGING_INTERVAL_MS=$HF_XET_CLIENT_AC_LOGGING_INTERVAL_MS"
-"$PYTHON_BIN" - <<'PY'
-from importlib.metadata import version
-from packaging.version import Version
-import hf_xet
-xet_version = Version(version("hf_xet"))
-if xet_version < Version("1.7.0"):
-    raise SystemExit(f"ERROR: hf_xet {xet_version} is too old for memory-aware high-performance mode.")
-print(f"HF_XET_VERSION={xet_version}", flush=True)
-print(f"HF_HUB_VERSION={version('huggingface_hub')}", flush=True)
-print("HF_XET_ADAPTIVE_DOWNLOAD_CONCURRENCY=enabled", flush=True)
-PY
-
-# Download only the model components used by this 480p text-to-video run.
-# The complete upstream transformer directory is hundreds of GB and includes
-# unrelated I2V, 720p, SR and distilled checkpoints.
+# Download model checkpoints immediately after the Vast host network-speed
+# gate. Do not install/update hf-xet or install Hunyuan's large dependencies
+# before the main 480p T2V weights are safely on the GPU disk.
+echo "[1/7] DOWNLOADING HUNYUAN 1.5 480P T2V + VAE WEIGHTS FIRST..."
+export HF_HUB_DISABLE_XET=1
+if ! "$PYTHON_BIN" -c 'import requests; from huggingface_hub import HfApi' >/dev/null 2>&1; then
+  echo "Installing only the small Hugging Face download client (no Xet engine)..."
+  "$PYTHON_BIN" -m pip install --progress-bar on requests huggingface_hub
+fi
 T2V_WEIGHT="$MODEL_DIR/transformer/480p_t2v/diffusion_pytorch_model.safetensors"
 VAE_WEIGHT="$MODEL_DIR/vae/diffusion_pytorch_model.safetensors"
 if [[ ! -s "$T2V_WEIGHT" || ! -s "$VAE_WEIGHT" || ! -f "$MODEL_DIR/transformer/480p_t2v/config.json" ]]; then
-  echo "[2/7] DOWNLOADING ONLY HUNYUANVIDEO-1.5 480P T2V + VAE CHECKPOINTS..."
   "$PYTHON_BIN" "$SCRIPT_DIR/hf_download_with_progress.py" tencent/HunyuanVideo-1.5 "$MODEL_DIR" \
-    --max-workers 16 \
+    --max-workers 4 \
     --allow config.json model_index.json 'scheduler/**' 'transformer/480p_t2v/**' 'vae/**'
   test -s "$T2V_WEIGHT" || { echo "ERROR: 480p T2V transformer checkpoint is missing/empty."; exit 1; }
   test -s "$VAE_WEIGHT" || { echo "ERROR: Hunyuan VAE checkpoint is missing/empty."; exit 1; }
@@ -202,20 +183,31 @@ else
   echo "Hunyuan 480p T2V transformer and VAE already exist; skipping download."
 fi
 
+# Only after the base model and VAE are fully downloaded and size-verified
+# do we clone source and prepare the CUDA/runtime dependencies.
+echo "[2/7] PREPARING HUNYUAN SOURCE AND GENERATION DEPENDENCIES..."
+if [[ ! -d "$REPO_DIR/.git" ]]; then
+  echo "Cloning official Tencent HunyuanVideo-1.5 source..."
+  git clone --depth 1 https://github.com/Tencent-Hunyuan/HunyuanVideo-1.5.git "$REPO_DIR"
+else
+  echo "Using existing HunyuanVideo source checkout: $REPO_DIR"
+fi
+cd "$REPO_DIR"
+
 mkdir -p "$MODEL_DIR/text_encoder/llm" "$MODEL_DIR/text_encoder/byt5-small" "$MODEL_DIR/text_encoder/Glyph-SDXL-v2"
 
 if [[ ! -f "$MODEL_DIR/text_encoder/llm/config.json" ]]; then
-  echo "[3/7] DOWNLOADING QWEN2.5-VL-7B TEXT ENCODER..."
+  echo "[4/7] DOWNLOADING QWEN2.5-VL-7B TEXT ENCODER..."
   "$PYTHON_BIN" "$SCRIPT_DIR/hf_download_with_progress.py" Qwen/Qwen2.5-VL-7B-Instruct "$MODEL_DIR/text_encoder/llm"
 fi
 
 if [[ ! -f "$MODEL_DIR/text_encoder/byt5-small/config.json" ]]; then
-  echo "[4/7] DOWNLOADING BYT5 TEXT ENCODER..."
+  echo "[5/7] DOWNLOADING BYT5 TEXT ENCODER..."
   "$PYTHON_BIN" "$SCRIPT_DIR/hf_download_with_progress.py" google/byt5-small "$MODEL_DIR/text_encoder/byt5-small"
 fi
 
 if [[ ! -d "$MODEL_DIR/text_encoder/Glyph-SDXL-v2/checkpoints" ]]; then
-  echo "[5/7] DOWNLOADING GLYPH-SDXL-V2 ASSETS..."
+  echo "[6/7] DOWNLOADING GLYPH-SDXL-V2 ASSETS..."
   modelscope download --model AI-ModelScope/Glyph-SDXL-v2 --local_dir "$MODEL_DIR/text_encoder/Glyph-SDXL-v2"
   echo "GLYPH_DOWNLOAD_COMPLETE"
 fi
@@ -225,7 +217,7 @@ export TOKENIZERS_PARALLELISM=false
 
 OUTPUT_PATH="$OUTPUT_DIR/hunyuan_t2v_$(date -u +%Y%m%dT%H%M%S).mp4"
 
-echo "[6/7] MODEL ASSETS READY — STARTING 480P VIDEO GENERATION..."
+echo "[7/7] MODEL ASSETS READY — STARTING 480P VIDEO GENERATION..."
 echo "Prompt: $PROMPT"
 echo "Frames: $VIDEO_LENGTH (~6 seconds at 24 fps) | Steps: $INFERENCE_STEPS"
 echo "Offloading: enabled | Super-resolution: disabled | Prompt rewrite: disabled"
@@ -254,7 +246,7 @@ fi
   --output_path "$OUTPUT_PATH" \
   --model_path "$MODEL_DIR"
 
-echo "[7/7] VERIFYING GENERATED VIDEO..."
+echo "[8/8] VERIFYING GENERATED VIDEO..."
 test -s "$OUTPUT_PATH" || { echo "ERROR: Generation finished but output file is missing/empty."; exit 1; }
 echo "SUCCESS: $OUTPUT_PATH"
 stat -c 'VIDEO_FILE_SIZE_BYTES=%s' "$OUTPUT_PATH"
