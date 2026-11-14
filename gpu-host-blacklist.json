@@ -11,9 +11,9 @@
       "cpu_arch": "amd64",
       "fingerprint": "138771|410852||||RTX 4060 Ti|Xeon\u00ae E5-2673 v4 |amd64",
       "reason": "download speed below 65 MB/s",
-      "measured_MBps": 17.97,
+      "measured_MBps": 16.45,
       "threshold_MBps": 65,
-      "blacklisted_at_utc": "2026-11-14T20:59:31Z"
+      "blacklisted_at_utc": "2026-11-14T21:08:11Z"
     }
   ]
 }
