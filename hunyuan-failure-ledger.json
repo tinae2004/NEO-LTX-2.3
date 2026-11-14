@@ -1,8 +1,40 @@
 {
   "schema_version": 1,
   "purpose": "Persistent regression ledger for NEO HunyuanVideo 1.5 T2V. Every new fix must add a regression guard before another paid GPU run.",
-  "last_reviewed_run": 85,
+  "last_reviewed_run": 91,
   "known_failures": [
+    {
+      "run": 91,
+      "date": "2026-11-14",
+      "signature": "SLOW_GPU_HOST: 16.45 MB/s; retry refreshed only 50 offers and found zero eligible candidates",
+      "stage": "pre_download_network_admission_and_candidate_discovery",
+      "root_cause": "The RTX 4060 Ti host passed SSH/NVIDIA readiness but measured 16.45 MB/s, below the 65 MB/s minimum. It was blacklisted. Candidate discovery requests only limit=50 and does not paginate, so the subsequent retry found no eligible offers in the limited result set. The retry mechanism ran, but market discovery was insufficient to find another host.",
+      "fix_or_status": "Known blocker. Keep the 65 MB/s threshold and existing budget/runtime caps. Before another paid run, implement paginated or otherwise exhaustive offer discovery, deduplicate offers across pages, exclude blacklisted and attempted hosts, and add regression tests proving the retry can select a second eligible offer beyond the first 50. Also poll Vast instance state until destruction is confirmed before renting a replacement; DELETE acceptance alone is not proof of teardown. No model download or video generation occurred.",
+      "regression_guards": [
+        "test_offer_discovery_paginates_beyond_first_50",
+        "test_retry_selects_next_eligible_offer_after_slow_host",
+        "test_retry_excludes_blacklisted_and_attempted_hosts",
+        "test_retry_waits_for_confirmed_instance_destruction",
+        "test_retry_uses_shared_deadline",
+        "test_slow_host_threshold_is_not_relaxed"
+      ],
+      "status": "open_code_and_market_discovery_blocker"
+    },
+    {
+      "run": 89,
+      "date": "2026-11-14",
+      "signature": "SLOW_GPU_HOST: 17.97 MB/s; retry found zero eligible offers",
+      "stage": "pre_download_network_admission_and_candidate_discovery",
+      "root_cause": "The rented RTX 4060 Ti measured 17.97 MB/s, below the 65 MB/s minimum, and was blacklisted. The retry then found no eligible offers in the available limited candidate set.",
+      "fix_or_status": "Same unresolved candidate-discovery and confirmed-teardown issue as run 91. Keep all safety caps and throughput requirements unchanged. No model download or video generation occurred.",
+      "regression_guards": [
+        "test_offer_discovery_paginates_beyond_first_50",
+        "test_retry_selects_next_eligible_offer_after_slow_host",
+        "test_retry_waits_for_confirmed_instance_destruction",
+        "test_retry_uses_shared_deadline"
+      ],
+      "status": "open_code_and_market_discovery_blocker"
+    },
     {
       "run": 85,
       "date": "2026-11-14",
@@ -78,6 +110,9 @@
     "Destroy the current paid instance before retrying another host.",
     "Retries share the original runtime deadline; do not reset the clock.",
     "Preserve SSH endpoint fallback and verify nvidia-smi before proceeding.",
-    "The real Hugging Face download watchdog independently enforces the 65 MB/s rolling throughput floor."
+    "The real Hugging Face download watchdog independently enforces the 65 MB/s rolling throughput floor.",
+    "Offer discovery must paginate beyond the first 50 results or otherwise exhaust the eligible market before declaring no offers remain.",
+    "After a measured slow host is blacklisted, retry must select a distinct eligible offer when one exists; refreshing the same first page is not sufficient.",
+    "Do not set the active instance to cleared and rent a replacement merely because DELETE was accepted; poll and confirm terminal teardown state first."
   ]
 }
