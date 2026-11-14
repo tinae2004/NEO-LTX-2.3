@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "purpose": "Persistent regression ledger for NEO HunyuanVideo 1.5 T2V. Every new fix must add a regression guard before another paid GPU run.",
+  "last_reviewed_run": 85,
+  "known_failures": [
+    {
+      "run": 85,
+      "date": "2026-11-14",
+      "signature": "SLOW_GPU_HOST: 54.07 MB/s below strict 65 MB/s minimum; retry found zero eligible offers",
+      "stage": "pre_download_network_admission",
+      "root_cause": "The rented RTX 5060 Ti host measured 54.07 MB/s on the pre-download throughput probe. The host was blacklisted and destroyed; the current offer set then had no eligible non-blacklisted offers.",
+      "fix_or_status": "No code relaxation. Keep the 65 MB/s floor. Retry is bounded by the shared deadline and must not rent a blacklisted host. This run did not download the model or generate a video.",
+      "regression_guards": [
+        "test_slow_host_threshold_is_not_relaxed",
+        "test_slow_host_is_blacklisted_before_retry",
+        "test_retry_uses_shared_deadline",
+        "test_host_blacklist_is_loaded_before_offer_selection"
+      ],
+      "status": "known_environmental_blocker"
+    },
+    {
+      "run": 84,
+      "date": "2026-11-14",
+      "signature": "SLOW_GPU_HOST: 64.12 MB/s below strict 65 MB/s minimum",
+      "stage": "pre_download_network_admission",
+      "root_cause": "The selected host was 0.88 MB/s below the configured minimum. The host was blacklisted and destroyed; remaining offers were excluded.",
+      "fix_or_status": "Retain strict throughput policy; do not silently lower the threshold. Distinguish a measured slow host from an inconclusive probe in logs.",
+      "regression_guards": [
+        "test_slow_host_threshold_is_not_relaxed",
+        "test_inconclusive_probe_is_not_permanently_blacklisted"
+      ],
+      "status": "known_environmental_blocker"
+    },
+    {
+      "run": 77,
+      "date": "2026-11-14",
+      "signature": "Network probe timeout was not retried by the outer failure handler",
+      "stage": "pre_download_network_admission",
+      "root_cause": "Retry marker was not recognized from the exception path.",
+      "fix_or_status": "Retry markers are included in raised exception text and local attempted-offer state is preserved across execv.",
+      "regression_guards": [
+        "test_inconclusive_probe_is_not_permanently_blacklisted",
+        "test_retry_uses_shared_deadline"
+      ],
+      "status": "fixed"
+    },
+    {
+      "run": 74,
+      "date": "2026-11-14",
+      "signature": "Cloudflare HTTP 403 and missing GitHub context for blacklist persistence",
+      "stage": "pre_download_network_admission_and_blacklist_persistence",
+      "root_cause": "Single speed-test endpoint was blocked and the runner lacked explicit GitHub token/repository environment values.",
+      "fix_or_status": "Probe has multiple endpoints; inconclusive probes are not treated as measured slow throughput. Workflow passes GITHUB_TOKEN and GITHUB_REPOSITORY.",
+      "regression_guards": [
+        "test_inconclusive_probe_is_not_permanently_blacklisted",
+        "test_workflow_passes_github_context"
+      ],
+      "status": "fixed"
+    },
+    {
+      "run": 72,
+      "date": "2026-11-14",
+      "signature": "SSH/NVIDIA readiness succeeded late but boot loop did not classify probe retry correctly",
+      "stage": "gpu_readiness",
+      "root_cause": "SSH endpoint readiness and instance status were not handled independently.",
+      "fix_or_status": "Probe SSH and nvidia-smi during status polling; continue across endpoint failures and wait for readiness.",
+      "regression_guards": [
+        "test_ssh_endpoint_fallback_remains_enabled"
+      ],
+      "status": "fixed"
+    }
+  ],
+  "invariants": [
+    "Never reduce the 65 MB/s minimum without explicit user approval.",
+    "Never exceed $0.10/hour, $0.50 default total budget, or one-hour runtime defaults/caps.",
+    "A host with measured throughput below 65 MB/s must be blacklisted before retry.",
+    "A timeout or unavailable speed-test endpoint is inconclusive and must not be permanently blacklisted as slow.",
+    "Destroy the current paid instance before retrying another host.",
+    "Retries share the original runtime deadline; do not reset the clock.",
+    "Preserve SSH endpoint fallback and verify nvidia-smi before proceeding.",
+    "The real Hugging Face download watchdog independently enforces the 65 MB/s rolling throughput floor."
+  ]
+}
