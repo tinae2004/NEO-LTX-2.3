@@ -101,27 +101,59 @@ def main():
         blacklist_path.write_text(json.dumps(blacklist_data, indent=2) + "\n")
         print(f"GPU_HOST_BLACKLISTED machine_id={ident['machine_id']} host_id={ident['host_id']} location={json.dumps(ident['geolocation'],sort_keys=True)} gpu={ident['gpu_name']} cpu={ident['cpu_name']} speed_MBps={measured_mbps:.2f}",flush=True)
     def find_candidates():
+        # Search the broad rentable/verified Vast market first. Do NOT constrain
+        # gpu_name or hardware specs in the API query: compatibility is decided
+        # locally below, so a compatible model beyond the first few GPU types
+        # is not hidden by a narrow server-side query.
         offers=api("POST","/bundles/",{
-            "gpu_name":{"in":["RTX 5060 Ti","RTX 5070 Ti","RTX 4070 Ti SUPER","RTX 4080","RTX 5080","RTX 4060 Ti"]},
-            "num_gpus":{"eq":1},"gpu_ram":{"gte":14},"cpu_ram":{"gte":48},
-            "disk_space":{"gte":a.disk_gb},"reliability":{"gte":0.99},
-            "verified":{"eq":True},"rentable":{"eq":True},"type":"ondemand","limit":50
+            "num_gpus":{"eq":1},
+            "verified":{"eq":True},"rentable":{"eq":True},"rented":{"eq":False},
+            "type":"ondemand","limit":1000,
+            "order":[["dph_total","asc"]]
         }).get("offers",[])
-        found=[]; skipped=0; transient_skipped=0
+        found=[]; skipped=0; transient_skipped=0; incompatible=0
+        supported=("RTX 5060 TI","RTX 5070 TI","RTX 4070 TI SUPER","RTX 4080","RTX 5080","RTX 4060 TI")
         for o in offers:
-            if str(o.get("id","")) in transient_failed_offers:
+            offer_id=str(o.get("id",""))
+            if offer_id in transient_failed_offers:
                 transient_skipped+=1
                 continue
             name=str(o.get("gpu_name","")).upper().replace("_"," ")
             rate=float(o.get("dph_total",o.get("dph",0)) or 0)
-            if not any(n in name for n in ("RTX 5060 TI","RTX 5070 TI","RTX 4070 TI SUPER","RTX 4080","RTX 5080","RTX 4060 TI")): continue
-            if rate<=0 or rate>a.max_hourly_usd or rate*a.max_hours*1.25>a.budget_usd: continue
+            # Vast reports GPU and system RAM in MB; convert the requested
+            # 14GB GPU / 48GB system requirements to MB before comparing.
+            gpu_ram=float(o.get("gpu_ram",0) or 0)
+            cpu_ram=float(o.get("cpu_ram",0) or 0)
+            disk_gb=float(o.get("disk_space",0) or 0)
+            reliability=float(o.get("reliability",o.get("reliability2",0)) or 0)
+            compatible=(
+                any(model in name for model in supported)
+                and gpu_ram >= 14*1024
+                and cpu_ram >= 48*1024
+                and disk_gb >= a.disk_gb
+                and reliability >= 0.99
+                and rate > 0
+                and rate <= a.max_hourly_usd
+                and rate*a.max_hours*1.25 <= a.budget_usd
+                and bool(o.get("verified", o.get("verification")=="verified"))
+                and bool(o.get("rentable", True))
+                and not bool(o.get("rented", False))
+            )
+            if not compatible:
+                incompatible+=1
+                continue
             if is_blacklisted(o):
                 skipped+=1
                 continue
-            found.append((rate,-float(o.get("reliability",0) or 0),o))
+            found.append((rate,-reliability,o))
         found.sort(key=lambda x:(x[0],x[1]))
-        print(f"GPU_HOST_BLACKLIST_LOADED={len(blocked)} matching_offers_skipped={skipped} transient_probe_failures_skipped={transient_skipped} eligible_offers={len(found)}",flush=True)
+        print(
+            f"VAST_MARKET_SEARCH_COMPLETE returned_offers={len(offers)} "
+            f"compatible_offers={len(found)} incompatible_filtered={incompatible} "
+            f"blacklisted_filtered={skipped} attempted_filtered={transient_skipped} "
+            f"search_limit=1000 gpu_models=all",
+            flush=True
+        )
         return found
     candidates=find_candidates()
     if not candidates: raise SystemExit("No verified 16GB RTX offer meets all limits. No rental made.")
