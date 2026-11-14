@@ -1,7 +1,7 @@
 {
   "hosts": [
     {
-      "machine_id": "37640",
+      "machine_id": "37644",
       "host_id": "55116",
       "geolocation": {
         "raw": "Vietnam, VN"
@@ -9,11 +9,11 @@
       "gpu_name": "RTX 5060 Ti",
       "cpu_name": "AMD EPYC 7352 24-Core Processor",
       "cpu_arch": "amd64",
-      "fingerprint": "37640|55116||||RTX 5060 Ti|AMD EPYC 7352 24-Core Processor|amd64",
+      "fingerprint": "37644|55116||||RTX 5060 Ti|AMD EPYC 7352 24-Core Processor|amd64",
       "reason": "download speed below 65 MB/s",
-      "measured_MBps": 54.07,
+      "measured_MBps": 59.53,
       "threshold_MBps": 65,
-      "blacklisted_at_utc": "2026-11-14T19:36:53Z"
+      "blacklisted_at_utc": "2026-11-14T19:55:13Z"
     }
   ]
 }
