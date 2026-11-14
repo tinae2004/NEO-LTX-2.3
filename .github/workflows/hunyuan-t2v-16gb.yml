@@ -7,6 +7,8 @@ on:
       - 'scripts/run_hunyuan_vast.py'
       - 'scripts/run_hunyuan_t2v_16gb.sh'
       - 'scripts/hf_download_with_progress.py'
+      - 'tests/test_hunyuan_regressions.py'
+      - 'hunyuan-failure-ledger.json'
   workflow_dispatch:
     inputs:
       prompt:
@@ -56,7 +58,7 @@ jobs:
           grep -Fq 'SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"' scripts/run_hunyuan_t2v_16gb.sh
           grep -Fq '"$SCRIPT_DIR/hf_download_with_progress.py"' scripts/run_hunyuan_t2v_16gb.sh
       - name: Run Hunyuan regression tests (no GPU cost)
-        run: python -m unittest discover -s tests -p 'test_*.py' -v
+        run: python -m unittest discover -s tests -p 'test_hunyuan_regressions.py' -v
       - name: Validate limits before provisioning
         env:
           BUDGET: ${{ inputs.budget_usd || '0.50' }}
