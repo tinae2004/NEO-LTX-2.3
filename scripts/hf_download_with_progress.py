@@ -9,7 +9,7 @@ import threading
 import time
 from pathlib import Path
 
-from huggingface_hub import snapshot_download
+from huggingface_hub import HfApi, snapshot_download
 from tqdm.asyncio import tqdm_asyncio
 
 
@@ -51,7 +51,6 @@ def main():
         help="Optional Hugging Face allow_patterns. Omit to download the full repository.",
     )
     parser.add_argument("--max-workers", type=int, default=8)
-    parser.add_argument("--min-mbps", type=float, default=65.0)
     parser.add_argument("--speed-window-seconds", type=int, default=45)
     parser.add_argument("--stall-seconds", type=int, default=90)
     args = parser.parse_args()
@@ -65,11 +64,20 @@ def main():
         for pattern in args.allow:
             print(f"DOWNLOAD_ALLOW_PATTERN {pattern}", flush=True)
 
-    if args.min_mbps <= 0 or args.speed_window_seconds < 15 or args.stall_seconds < args.speed_window_seconds:
+    if args.speed_window_seconds < 15 or args.stall_seconds < args.speed_window_seconds:
         raise SystemExit("Invalid download watchdog settings.")
+    token = os.environ.get("HF_TOKEN", "").strip()
+    if not token:
+        raise SystemExit("HF_TOKEN is missing on the GPU; refusing anonymous model download.")
+    print("HF_TOKEN_PRESENT=1", flush=True)
+    try:
+        info = HfApi(token=token).model_info(args.repo_id)
+        print(f"HF_AUTHENTICATED=1 repo={args.repo_id} revision={info.sha}", flush=True)
+    except Exception as exc:
+        raise SystemExit(f"HF_AUTH_OR_REPO_ACCESS_FAILED: {type(exc).__name__}: {exc}")
 
-    # Track bytes actually written into this Hugging Face local_dir, including
-    # .incomplete files. This measures the real model transfer, not Cloudflare.
+    # Track actual bytes written for diagnostics only. Hugging Face transfer
+    # speed is not a GPU-host eligibility rule and must never abort a download.
     stop = threading.Event()
     failure = []
     def directory_bytes():
@@ -110,12 +118,6 @@ def main():
                 failure.append(f"HF_DOWNLOAD_STALLED: no model bytes written for {args.stall_seconds}s")
                 stop.set()
                 return
-            # Enforce only after the complete rolling window has elapsed and
-            # actual file growth proves that a model transfer is underway.
-            if elapsed >= args.speed_window_seconds and delta > 0 and mbps < args.min_mbps:
-                failure.append(f"SLOW_HF_DOWNLOAD_HOST: {mbps:.2f} MB/s below {args.min_mbps:.0f} MB/s")
-                stop.set()
-                return
             last_bytes = current
 
     watcher = threading.Thread(target=watch_download, name="hf-download-watchdog", daemon=True)
@@ -127,7 +129,7 @@ def main():
             allow_patterns=args.allow,
             max_workers=args.max_workers,
             tqdm_class=LogProgress,
-            token=os.environ.get("HF_TOKEN") or None,
+            token=token,
         )
     finally:
         stop.set()
