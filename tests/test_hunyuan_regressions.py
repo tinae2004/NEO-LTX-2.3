@@ -55,6 +55,19 @@ class HunyuanRegressionTests(unittest.TestCase):
         self.assertIn("SLOW_HF_DOWNLOAD_HOST", DOWNLOADER)
         self.assertIn("args.min_mbps", DOWNLOADER)
 
+
+    def test_remote_download_survives_ssh_disconnect(self):
+        self.assertIn("nohup bash -lc", RUNNER)
+        self.assertIn("HUNYUAN_STILL_RUNNING", RUNNER)
+        self.assertIn("SSH_POLL_DISCONNECTED", RUNNER)
+        self.assertIn("SSH_RECONNECT_PENDING", RUNNER)
+        self.assertIn("without restarting model download", RUNNER)
+
+    def test_huggingface_download_reuses_partial_files(self):
+        self.assertIn("snapshot_download(", DOWNLOADER)
+        self.assertIn("local_dir=str(args.local_dir)", DOWNLOADER)
+        self.assertIn("DOWNLOAD_START", DOWNLOADER)
+
     def test_every_ledger_guard_has_a_test(self):
         test_names = {name for name in dir(self) if name.startswith("test_")}
         for item in LEDGER["known_failures"]:
