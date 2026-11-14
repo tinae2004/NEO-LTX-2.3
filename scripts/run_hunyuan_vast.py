@@ -112,23 +112,20 @@ def main():
             "order":[["dph_total","asc"]]
         }).get("offers",[])
         found=[]; skipped=0; transient_skipped=0; incompatible=0
-        supported=("RTX 5060 TI","RTX 5070 TI","RTX 4070 TI SUPER","RTX 4080","RTX 5080","RTX 4060 TI")
         for o in offers:
             offer_id=str(o.get("id",""))
             if offer_id in transient_failed_offers:
                 transient_skipped+=1
                 continue
-            name=str(o.get("gpu_name","")).upper().replace("_"," ")
             rate=float(o.get("dph_total",o.get("dph",0)) or 0)
-            # Vast reports GPU and system RAM in MB; convert the requested
-            # 14GB GPU / 48GB system requirements to MB before comparing.
+            # Vast reports GPU and system RAM in MB; enforce 16GB VRAM
+            # and 48GB system RAM after the broad market search.
             gpu_ram=float(o.get("gpu_ram",0) or 0)
             cpu_ram=float(o.get("cpu_ram",0) or 0)
             disk_gb=float(o.get("disk_space",0) or 0)
             reliability=float(o.get("reliability",o.get("reliability2",0)) or 0)
             compatible=(
-                any(model in name for model in supported)
-                and gpu_ram >= 14*1024
+                gpu_ram >= 16*1024
                 and cpu_ram >= 48*1024
                 and disk_gb >= a.disk_gb
                 and reliability >= 0.99
@@ -156,7 +153,7 @@ def main():
         )
         return found
     candidates=find_candidates()
-    if not candidates: raise SystemExit("No verified 16GB RTX offer meets all limits. No rental made.")
+    if not candidates: raise SystemExit("No verified GPU with at least 16GB VRAM meets all limits. No rental made.")
     out=Path(a.output_dir); out.mkdir(parents=True,exist_ok=True)
     temp=Path(tempfile.mkdtemp(prefix="neo-hunyuan-")); instance=None; agent=False
     try:
