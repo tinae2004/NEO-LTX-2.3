@@ -17,13 +17,13 @@ def main():
     p=argparse.ArgumentParser()
     p.add_argument("--prompt",required=True)
     p.add_argument("--budget-usd",type=float,default=0.50)
-    p.add_argument("--max-hourly-usd",type=float,default=0.10)
+    p.add_argument("--max-hourly-usd",type=float,default=0.20)
     p.add_argument("--max-hours",type=float,default=1.0)
     p.add_argument("--disk-gb",type=int,default=160)
     p.add_argument("--output-dir",default="hunyuan-output")
     a=p.parse_args()
-    if not (0<a.max_hourly_usd<=0.10 and 0<a.budget_usd<=1.00 and 0.25<=a.max_hours<=1.0):
-        raise SystemExit("Safety cap: hourly <= $0.10, total budget <= $1.00, runtime 0.25-1.0 hour.")
+    if not (0<a.max_hourly_usd<=0.20 and 0<a.budget_usd<=1.00 and 0.25<=a.max_hours<=1.0):
+        raise SystemExit("Safety cap: hourly <= $0.20, total budget <= $1.00, runtime 0.25-1.0 hour.")
     if a.max_hourly_usd*a.max_hours*1.25>a.budget_usd:
         raise SystemExit("Budget does not cover hourly cap x runtime plus 25% reserve.")
     deadline=float(os.environ.get("NEO_GPU_DEADLINE_MONOTONIC", "0") or 0)
