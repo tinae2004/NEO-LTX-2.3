@@ -49,6 +49,7 @@ def main():
     except Exception as exc:
         raise RuntimeError(f"Cannot read GPU host blacklist safely: {exc}")
     blocked=blacklist_data.get("hosts",[])
+    transient_failed_offers=set(filter(None,os.environ.get("NEO_ATTEMPTED_OFFER_IDS","").split(",")))
     def host_identity(o):
         geo=o.get("geolocation") or o.get("location") or {}
         if not isinstance(geo,dict): geo={"raw":str(geo)}
@@ -103,8 +104,11 @@ def main():
             "disk_space":{"gte":a.disk_gb},"reliability":{"gte":0.99},
             "verified":{"eq":True},"rentable":{"eq":True},"type":"ondemand","limit":50
         }).get("offers",[])
-        found=[]; skipped=0
+        found=[]; skipped=0; transient_skipped=0
         for o in offers:
+            if str(o.get("id","")) in transient_failed_offers:
+                transient_skipped+=1
+                continue
             name=str(o.get("gpu_name","")).upper().replace("_"," ")
             rate=float(o.get("dph_total",o.get("dph",0)) or 0)
             if not any(n in name for n in ("RTX 5060 TI","RTX 5070 TI","RTX 4070 TI SUPER","RTX 4080","RTX 5080","RTX 4060 TI")): continue
@@ -114,7 +118,7 @@ def main():
                 continue
             found.append((rate,-float(o.get("reliability",0) or 0),o))
         found.sort(key=lambda x:(x[0],x[1]))
-        print(f"GPU_HOST_BLACKLIST_LOADED={len(blocked)} matching_offers_skipped={skipped} eligible_offers={len(found)}",flush=True)
+        print(f"GPU_HOST_BLACKLIST_LOADED={len(blocked)} matching_offers_skipped={skipped} transient_probe_failures_skipped={transient_skipped} eligible_offers={len(found)}",flush=True)
         return found
     candidates=find_candidates()
     if not candidates: raise SystemExit("No verified 16GB RTX offer meets all limits. No rental made.")
@@ -234,28 +238,65 @@ def main():
         # Four concurrent 32 MiB streams = 128 MiB total benchmark traffic.
         print("STARTING_PRE_DOWNLOAD_SPEED_TEST threshold_MBps=65 test_bytes=134217728",flush=True)
         speed_script = r"""python3 - <<'PY'
-import concurrent.futures, time, urllib.request
-URL='https://speed.cloudflare.com/__down?bytes=16777216'
-def fetch(_):
-    req=urllib.request.Request(URL,headers={'User-Agent':'NEO-Hunyuan-Network-Probe/1.0','Cache-Control':'no-cache'})
-    start=time.monotonic(); total=0
-    with urllib.request.urlopen(req,timeout=15) as response:
-        while True:
-            chunk=response.read(1024*1024)
-            if not chunk: break
-            total += len(chunk)
-    return total, time.monotonic()-start
-start=time.monotonic()
+import concurrent.futures, time, urllib.request, urllib.error
+ENDPOINTS = [
+    ("cloudflare", "https://speed.cloudflare.com/__down?bytes=16777216"),
+    ("ovh", "https://proof.ovh.net/files/100Mb.dat"),
+    ("hetzner", "https://speed.hetzner.de/100MB.bin"),
+]
+LIMIT = 16 * 1024 * 1024
+def fetch(url):
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+            "Cache-Control": "no-cache",
+            "Range": f"bytes=0-{LIMIT-1}",
+            "Referer": "https://speed.cloudflare.com/",
+        },
+    )
+    started = time.monotonic()
+    total = 0
+    try:
+        with urllib.request.urlopen(req, timeout=18) as response:
+            while total < LIMIT:
+                chunk = response.read(min(1024 * 1024, LIMIT - total))
+                if not chunk:
+                    break
+                total += len(chunk)
+            return total, time.monotonic() - started, getattr(response, "status", 200), ""
+    except urllib.error.HTTPError as exc:
+        return 0, time.monotonic() - started, exc.code, f"HTTP {exc.code}"
+    except Exception as exc:
+        return 0, time.monotonic() - started, 0, f"{type(exc).__name__}: {exc}"
 with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-    results=list(pool.map(fetch,range(4)))
-elapsed=time.monotonic()-start
-total=sum(x[0] for x in results)
-mbps=(total/1_000_000)/elapsed if elapsed>0 else 0
-print(f'PRE_DOWNLOAD_SPEED_TEST bytes={total} elapsed_seconds={elapsed:.3f} download_MBps={mbps:.2f}',flush=True)
-if total < 60*1024*1024:
-    raise SystemExit(f'SLOW_GPU_HOST: incomplete speed test ({total} bytes); rejecting host')
-if mbps < 65:
-    raise SystemExit(f'SLOW_GPU_HOST: {mbps:.2f} MB/s is below the strict 65 MB/s minimum')
+    for label, url in ENDPOINTS:
+        started = time.monotonic()
+        results = list(pool.map(lambda _: fetch(url), range(4)))
+        elapsed = time.monotonic() - started
+        total = sum(item[0] for item in results)
+        statuses = sorted(set(item[2] for item in results))
+        errors = sorted(set(item[3] for item in results if item[3]))
+        mbps = (total / 1_000_000) / elapsed if elapsed > 0 else 0.0
+        print(
+            f"NETWORK_PROBE_ENDPOINT name={label} bytes={total} elapsed_seconds={elapsed:.3f} "
+            f"download_MBps={mbps:.2f} statuses={statuses} errors={errors}",
+            flush=True,
+        )
+        if total >= 60 * 1024 * 1024:
+            print(
+                f"PRE_DOWNLOAD_SPEED_TEST endpoint={label} bytes={total} "
+                f"elapsed_seconds={elapsed:.3f} download_MBps={mbps:.2f}",
+                flush=True,
+            )
+            if mbps < 65:
+                raise SystemExit(f"SLOW_GPU_HOST: {mbps:.2f} MB/s is below the strict 65 MB/s minimum")
+            break
+    else:
+        raise SystemExit(
+            "NETWORK_PROBE_UNAVAILABLE: all speed-test endpoints were blocked, incomplete, or unreachable; "
+            "no throughput conclusion can safely be made."
+        )
 PY"""
         print("STARTING_PRE_DOWNLOAD_SPEED_TEST threshold_MBps=65 test_bytes=67108864 max_seconds=40",flush=True)
         try:
@@ -271,6 +312,13 @@ PY"""
             print("PRE_DOWNLOAD_SPEED_TEST_TIMEOUT: host failed the 40-second admission test.",flush=True)
         print(speed_output,flush=True)
         if speed_failed:
+            if "NETWORK_PROBE_UNAVAILABLE" in speed_output:
+                failed_offer_id=str(selected.get("id",""))
+                if failed_offer_id:
+                    transient_failed_offers.add(failed_offer_id)
+                    os.environ["NEO_ATTEMPTED_OFFER_IDS"]=",".join(sorted(transient_failed_offers))
+                print(f"NETWORK_PROBE_UNAVAILABLE_RETRY_REQUIRED offer_id={failed_offer_id}; host not blacklisted because throughput was not measured.",flush=True)
+                raise RuntimeError("NETWORK_PROBE_UNAVAILABLE_RETRY_REQUIRED: all probe endpoints were blocked or unavailable; moving to another offer without blacklisting this host.")
             match=re.search(r"download_MBps=([0-9.]+)",speed_output)
             measured=float(match.group(1)) if match else 0.0
             # Timeouts, incomplete transfers and slow throughput all follow
@@ -346,7 +394,7 @@ PY"""
         print("NEO_HUNYUAN_FAILURE\\n"+failure, file=sys.stderr, flush=True)
         # Stop paid compute before asking DeepSeek to diagnose the failure.
         hf_download_failure = ("SLOW_HF_DOWNLOAD_HOST" in failure or "HF_DOWNLOAD_STALLED" in failure)
-        slow_host_retry = ("SLOW_HOST_RETRY_REQUIRED" in failure) or hf_download_failure
+        slow_host_retry = ("SLOW_HOST_RETRY_REQUIRED" in failure) or hf_download_failure or ("NETWORK_PROBE_UNAVAILABLE_RETRY_REQUIRED" in failure)
         hf_speed_match = re.search(r"SLOW_HF_DOWNLOAD_HOST: ([0-9.]+) MB/s", failure)
         if instance is not None:
             try:
