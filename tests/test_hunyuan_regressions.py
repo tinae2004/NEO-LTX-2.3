@@ -41,8 +41,8 @@ class HunyuanRegressionTests(unittest.TestCase):
         self.assertIn("blacklist_path.write_text", RUNNER)
 
     def test_ssh_endpoint_fallback_remains_enabled(self):
-        self.assertIn("source=instance_api", RUNNER)
-        self.assertIn("source=vastai_ssh_url", RUNNER)
+        self.assertIn('source="instance_api"', RUNNER)
+        self.assertIn('source="vastai_ssh_url"', RUNNER)
         self.assertIn('"nvidia-smi"', RUNNER)
         self.assertIn("SSH_ENDPOINTS_NOT_READY_YET", RUNNER)
 
