@@ -70,7 +70,9 @@ class HunyuanRegressionTests(unittest.TestCase):
         self.assertIn("gpu_models=all", search_block)
 
     def test_compatibility_filters_use_gb_to_mb_units(self):
-        self.assertIn("gpu_ram >= 14*1024", RUNNER)
+        self.assertIn("gpu_ram >= 16*1024", RUNNER)
+        self.assertNotIn("supported=(", RUNNER)
+        self.assertNotIn("any(model in name for model in supported)", RUNNER)
         self.assertIn("cpu_ram >= 48*1024", RUNNER)
         self.assertIn("disk_gb >= a.disk_gb", RUNNER)
         self.assertIn("reliability >= 0.99", RUNNER)
