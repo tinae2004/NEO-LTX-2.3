@@ -20,10 +20,10 @@ on:
         type: number
         default: 0.50
       max_hourly_usd:
-        description: Maximum GPU price per hour in USD (maximum 0.10)
+        description: Maximum GPU price per hour in USD (maximum 0.20)
         required: true
         type: number
-        default: 0.10
+        default: 0.20
       max_hours:
         description: Maximum rental duration in hours (maximum 1.0)
         required: true
@@ -58,14 +58,14 @@ jobs:
       - name: Validate limits before provisioning
         env:
           BUDGET: ${{ inputs.budget_usd || '0.50' }}
-          HOURLY: ${{ inputs.max_hourly_usd || '0.10' }}
+          HOURLY: ${{ inputs.max_hourly_usd || '0.20' }}
           HOURS: ${{ inputs.max_hours || '1.0' }}
         run: |
           python - <<'PY'
           import os
           b=float(os.environ["BUDGET"]); h=float(os.environ["HOURLY"]); t=float(os.environ["HOURS"])
           assert 0 < b <= 1.0, "Budget must be between $0 and $1"
-          assert 0 < h <= 0.10, "Hourly cap cannot exceed $0.10"
+          assert 0 < h <= 0.20, "Hourly cap cannot exceed $0.10"
           assert 0.25 <= t <= 1.0, "Runtime must be 0.25-1.0 hours"
           assert h*t*1.25 <= b, "Budget must cover hourly cap x runtime plus 25% reserve"
           PY
