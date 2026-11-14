@@ -65,7 +65,7 @@ jobs:
           import os
           b=float(os.environ["BUDGET"]); h=float(os.environ["HOURLY"]); t=float(os.environ["HOURS"])
           assert 0 < b <= 1.0, "Budget must be between $0 and $1"
-          assert 0 < h <= 0.20, "Hourly cap cannot exceed $0.10"
+          assert 0 < h <= 0.20, "Hourly cap cannot exceed $0.20"
           assert 0.25 <= t <= 1.0, "Runtime must be 0.25-1.0 hours"
           assert h*t*1.25 <= b, "Budget must cover hourly cap x runtime plus 25% reserve"
           PY
