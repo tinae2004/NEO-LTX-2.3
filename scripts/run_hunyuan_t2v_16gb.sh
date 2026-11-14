@@ -73,6 +73,31 @@ if sys.version_info < (3, 10):
 print("Python:", sys.version.split()[0])
 PY
 
+# Download model checkpoints immediately after the Vast host network-speed
+# gate. Do not install/update hf-xet or install Hunyuan's large dependencies
+# before the main 480p T2V weights are safely on the GPU disk.
+echo "[1/7] DOWNLOADING HUNYUAN 1.5 480P T2V + VAE WEIGHTS FIRST..."
+export HF_HUB_DISABLE_XET=1
+if ! "$PYTHON_BIN" -c 'import requests; from huggingface_hub import HfApi' >/dev/null 2>&1; then
+  echo "Installing only the small Hugging Face download client (no Xet engine)..."
+  "$PYTHON_BIN" -m pip install --progress-bar on requests huggingface_hub
+fi
+T2V_WEIGHT="$MODEL_DIR/transformer/480p_t2v/diffusion_pytorch_model.safetensors"
+VAE_WEIGHT="$MODEL_DIR/vae/diffusion_pytorch_model.safetensors"
+if [[ ! -s "$T2V_WEIGHT" || ! -s "$VAE_WEIGHT" || ! -f "$MODEL_DIR/transformer/480p_t2v/config.json" ]]; then
+  "$PYTHON_BIN" "$SCRIPT_DIR/hf_download_with_progress.py" tencent/HunyuanVideo-1.5 "$MODEL_DIR" \
+    --max-workers 4 \
+    --allow config.json model_index.json 'scheduler/**' 'transformer/480p_t2v/**' 'vae/**'
+  test -s "$T2V_WEIGHT" || { echo "ERROR: 480p T2V transformer checkpoint is missing/empty."; exit 1; }
+  test -s "$VAE_WEIGHT" || { echo "ERROR: Hunyuan VAE checkpoint is missing/empty."; exit 1; }
+  test -f "$MODEL_DIR/transformer/480p_t2v/config.json" || { echo "ERROR: 480p T2V transformer config is missing."; exit 1; }
+  touch "$MODEL_DIR/.neo_hunyuan_base_downloaded"
+  echo "HUNYUAN_480P_T2V_BASE_ASSETS_VERIFIED"
+else
+  echo "Hunyuan 480p T2V transformer and VAE already exist; skipping download."
+fi
+
+
 # Reuse the CUDA-enabled PyTorch stack baked into the Vast PyTorch image
 # when it is already compatible; fall back to the upstream requirements only
 # when the base image does not provide a usable CUDA stack.
@@ -109,29 +134,6 @@ except Exception as exc:
     sys.exit(1)
 PY
 
-# Download model checkpoints immediately after the Vast host network-speed
-# gate. Do not install/update hf-xet or install Hunyuan's large dependencies
-# before the main 480p T2V weights are safely on the GPU disk.
-echo "[1/7] DOWNLOADING HUNYUAN 1.5 480P T2V + VAE WEIGHTS FIRST..."
-export HF_HUB_DISABLE_XET=1
-if ! "$PYTHON_BIN" -c 'import requests; from huggingface_hub import HfApi' >/dev/null 2>&1; then
-  echo "Installing only the small Hugging Face download client (no Xet engine)..."
-  "$PYTHON_BIN" -m pip install --progress-bar on requests huggingface_hub
-fi
-T2V_WEIGHT="$MODEL_DIR/transformer/480p_t2v/diffusion_pytorch_model.safetensors"
-VAE_WEIGHT="$MODEL_DIR/vae/diffusion_pytorch_model.safetensors"
-if [[ ! -s "$T2V_WEIGHT" || ! -s "$VAE_WEIGHT" || ! -f "$MODEL_DIR/transformer/480p_t2v/config.json" ]]; then
-  "$PYTHON_BIN" "$SCRIPT_DIR/hf_download_with_progress.py" tencent/HunyuanVideo-1.5 "$MODEL_DIR" \
-    --max-workers 4 \
-    --allow config.json model_index.json 'scheduler/**' 'transformer/480p_t2v/**' 'vae/**'
-  test -s "$T2V_WEIGHT" || { echo "ERROR: 480p T2V transformer checkpoint is missing/empty."; exit 1; }
-  test -s "$VAE_WEIGHT" || { echo "ERROR: Hunyuan VAE checkpoint is missing/empty."; exit 1; }
-  test -f "$MODEL_DIR/transformer/480p_t2v/config.json" || { echo "ERROR: 480p T2V transformer config is missing."; exit 1; }
-  touch "$MODEL_DIR/.neo_hunyuan_base_downloaded"
-  echo "HUNYUAN_480P_T2V_BASE_ASSETS_VERIFIED"
-else
-  echo "Hunyuan 480p T2V transformer and VAE already exist; skipping download."
-fi
 
 # Only after the base model and VAE are fully downloaded and size-verified
 # do we clone source and prepare the CUDA/runtime dependencies.
