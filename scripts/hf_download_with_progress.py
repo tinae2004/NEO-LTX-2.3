@@ -1,143 +1,109 @@
 #!/usr/bin/env python3
-"""Resumable Hugging Face downloader with durable file-count progress logs."""
+"""Authenticated browser-style Hugging Face downloader with HTTP Range resume."""
 from __future__ import annotations
-
-import argparse
-import os
-import sys
-import threading
-import time
+import argparse, fnmatch, os, time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from urllib.parse import quote
+import requests
+from huggingface_hub import HfApi
 
-from huggingface_hub import HfApi, snapshot_download
-from tqdm.asyncio import tqdm_asyncio
+def matches(name, patterns):
+    return not patterns or any(fnmatch.fnmatch(name, p) for p in patterns)
 
-
-class LogProgress(tqdm_asyncio):
-    """Log completed snapshot files even when CI cannot render tqdm bars."""
-
-    def __init__(self, *args, **kwargs):
-        kwargs.setdefault("mininterval", 2.0)
-        kwargs.setdefault("miniters", 1)
-        kwargs.setdefault("dynamic_ncols", False)
-        kwargs.setdefault("leave", True)
-        super().__init__(*args, **kwargs)
-        self._last_logged_time = 0.0
-        self._last_logged_count = -1
-
-    def display(self, msg=None, pos=None):
-        now = time.monotonic()
-        total = int(self.total or 0)
-        done = int(self.n or 0)
-        if done != self._last_logged_count or now - self._last_logged_time >= 15:
-            percent = f"{100.0 * done / total:.1f}" if total else "unknown"
-            print(
-                f"DOWNLOAD_FILE_PROGRESS completed={done} total={total} percent={percent}",
-                file=sys.stdout,
-                flush=True,
-            )
-            self._last_logged_count = done
-            self._last_logged_time = now
-
+def download_one(repo, revision, item, dest, token, session):
+    name = item.rfilename
+    expected = getattr(item, "size", None)
+    target = dest / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_file() and expected is not None and target.stat().st_size == expected:
+        print(f"DOWNLOAD_SKIP_VERIFIED file={name} bytes={expected}", flush=True)
+        return expected
+    partial = target.with_name(target.name + ".incomplete")
+    url = f"https://huggingface.co/{repo}/resolve/{revision}/{quote(name, safe='/')}?download=true"
+    for attempt in range(4):
+        offset = partial.stat().st_size if partial.exists() else 0
+        headers = {"Authorization": f"Bearer {token}", "User-Agent": "NEO-Hunyuan-GPU/1.0"}
+        if offset:
+            headers["Range"] = f"bytes={offset}-"
+        try:
+            with session.get(url, headers=headers, stream=True, allow_redirects=True, timeout=(30, 180)) as response:
+                if response.status_code not in (200, 206):
+                    response.raise_for_status()
+                    raise RuntimeError(f"Unexpected HTTP {response.status_code}")
+                append = response.status_code == 206 and offset > 0
+                if offset and response.status_code == 200:
+                    offset = 0
+                received = offset
+                print(f"FILE_TRANSFER_START file={name} resume_bytes={offset} http={response.status_code}", flush=True)
+                with partial.open("ab" if append else "wb") as out:
+                    last_report = time.monotonic()
+                    for chunk in response.iter_content(chunk_size=8 * 1024 * 1024):
+                        if chunk:
+                            out.write(chunk)
+                            received += len(chunk)
+                            now = time.monotonic()
+                            if now - last_report >= 10:
+                                print(f"FILE_TRANSFER_PROGRESS file={name} bytes={received}", flush=True)
+                                last_report = now
+                    out.flush()
+                    os.fsync(out.fileno())
+            actual = partial.stat().st_size
+            if expected is not None and actual != expected:
+                raise IOError(f"Size mismatch expected={expected} actual={actual}")
+            partial.replace(target)
+            print(f"FILE_TRANSFER_COMPLETE file={name} bytes={actual}", flush=True)
+            return actual
+        except Exception as exc:
+            print(f"FILE_TRANSFER_RETRY file={name} attempt={attempt+1}/4 error={type(exc).__name__}:{exc}", flush=True)
+            if attempt == 3:
+                raise
+            time.sleep(5 * (attempt + 1))
+    raise RuntimeError(f"Download failed: {name}")
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("repo_id")
-    parser.add_argument("local_dir", type=Path)
-    parser.add_argument(
-        "--allow",
-        nargs="+",
-        default=None,
-        help="Optional Hugging Face allow_patterns. Omit to download the full repository.",
-    )
-    parser.add_argument("--max-workers", type=int, default=8)
-    parser.add_argument("--speed-window-seconds", type=int, default=45)
-    parser.add_argument("--stall-seconds", type=int, default=90)
-    args = parser.parse_args()
-
-    if not 1 <= args.max_workers <= 16:
-        raise SystemExit("--max-workers must be between 1 and 16")
-
-    args.local_dir.mkdir(parents=True, exist_ok=True)
-    print(f"DOWNLOAD_START repo={args.repo_id} destination={args.local_dir}", flush=True)
-    if args.allow:
-        for pattern in args.allow:
-            print(f"DOWNLOAD_ALLOW_PATTERN {pattern}", flush=True)
-
-    if args.speed_window_seconds < 15 or args.stall_seconds < args.speed_window_seconds:
-        raise SystemExit("Invalid download watchdog settings.")
+    p = argparse.ArgumentParser()
+    p.add_argument("repo_id")
+    p.add_argument("local_dir", type=Path)
+    p.add_argument("--allow", nargs="+", default=None)
+    p.add_argument("--max-workers", type=int, default=4)
+    a = p.parse_args()
+    if not 1 <= a.max_workers <= 8:
+        raise SystemExit("--max-workers must be between 1 and 8")
     token = os.environ.get("HF_TOKEN", "").strip()
     if not token:
-        raise SystemExit("HF_TOKEN is missing on the GPU; refusing anonymous model download.")
+        raise SystemExit("HF_TOKEN is missing; refusing anonymous download.")
+    a.local_dir.mkdir(parents=True, exist_ok=True)
+    info = HfApi(token=token).model_info(a.repo_id, files_metadata=True)
+    files = [f for f in (info.siblings or []) if f.rfilename and matches(f.rfilename, a.allow)]
+    if not files:
+        raise SystemExit("No files matched the requested Hugging Face allow patterns.")
     print("HF_TOKEN_PRESENT=1", flush=True)
-    try:
-        info = HfApi(token=token).model_info(args.repo_id)
-        print(f"HF_AUTHENTICATED=1 repo={args.repo_id} revision={info.sha}", flush=True)
-    except Exception as exc:
-        raise SystemExit(f"HF_AUTH_OR_REPO_ACCESS_FAILED: {type(exc).__name__}: {exc}")
-
-    # Track actual bytes written for diagnostics only. Hugging Face transfer
-    # speed is not a GPU-host eligibility rule and must never abort a download.
-    stop = threading.Event()
-    failure = []
-    def directory_bytes():
-        total = 0
-        try:
-            for item in args.local_dir.rglob("*"):
-                try:
-                    if item.is_file():
-                        total += item.stat().st_size
-                except OSError:
-                    pass
-        except OSError:
-            pass
-        return total
-
-    def watch_download():
-        started = time.monotonic()
-        last_change = started
-        last_bytes = directory_bytes()
-        samples = [(started, last_bytes)]
-        last_report = started
-        while not stop.wait(5):
-            now = time.monotonic()
-            current = directory_bytes()
-            if current > last_bytes:
-                last_change = now
-            samples.append((now, current))
-            cutoff = now - args.speed_window_seconds
-            while len(samples) > 2 and samples[1][0] <= cutoff:
-                samples.pop(0)
-            elapsed = now - samples[0][0]
-            delta = max(0, current - samples[0][1])
-            mbps = (delta / 1_000_000) / elapsed if elapsed > 0 else 0.0
-            if now - last_report >= 15:
-                print(f"HF_REAL_DOWNLOAD_SPEED_MBPS={mbps:.2f} bytes_written={current} window_seconds={elapsed:.0f}", flush=True)
-                last_report = now
-            if now - last_change >= args.stall_seconds:
-                failure.append(f"HF_DOWNLOAD_STALLED: no model bytes written for {args.stall_seconds}s")
-                stop.set()
-                return
-            last_bytes = current
-
-    watcher = threading.Thread(target=watch_download, name="hf-download-watchdog", daemon=True)
-    watcher.start()
-    try:
-        result = snapshot_download(
-            repo_id=args.repo_id,
-            local_dir=str(args.local_dir),
-            allow_patterns=args.allow,
-            max_workers=args.max_workers,
-            tqdm_class=LogProgress,
-            token=token,
-        )
-    finally:
-        stop.set()
-        watcher.join(timeout=10)
-    if failure:
-        raise RuntimeError(failure[0])
-    print(f"DOWNLOAD_COMPLETE repo={args.repo_id} path={result}", flush=True)
-
+    print(f"HF_AUTHENTICATED=1 repo={a.repo_id} revision={info.sha}", flush=True)
+    print(f"DIRECT_RESOLVE_DOWNLOAD=1 selected_files={len(files)}", flush=True)
+    for pattern in a.allow or []:
+        print(f"DOWNLOAD_ALLOW_PATTERN {pattern}", flush=True)
+    expected_total = sum(int(f.size) for f in files if getattr(f, "size", None) is not None)
+    print(f"DOWNLOAD_MANIFEST files={len(files)} expected_bytes={expected_total}", flush=True)
+    session = requests.Session()
+    done = total = 0
+    failures = []
+    with ThreadPoolExecutor(max_workers=a.max_workers) as pool:
+        futures = {pool.submit(download_one, a.repo_id, info.sha, f, a.local_dir, token, session): f.rfilename for f in files}
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                size = future.result()
+                done += 1
+                total += size
+                print(f"DOWNLOAD_FILE_PROGRESS completed={done} total={len(files)} bytes={total}", flush=True)
+            except Exception as exc:
+                failures.append((name, str(exc)))
+                print(f"DOWNLOAD_FILE_FAILED file={name} error={exc}", flush=True)
+    session.close()
+    if failures:
+        raise SystemExit(f"Download failures: {failures[:5]}")
+    print(f"DOWNLOAD_COMPLETE repo={a.repo_id} files={done} bytes={total} path={a.local_dir}", flush=True)
 
 if __name__ == "__main__":
     main()
