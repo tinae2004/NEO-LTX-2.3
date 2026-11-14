@@ -119,15 +119,15 @@ def main():
                 continue
             name=str(o.get("gpu_name","")).upper().replace("_"," ").strip()
             rate=float(o.get("dph_total",o.get("dph",0)) or 0)
-            # Hunyuan workflow is pinned to the RTX 4060 Ti 16GB only.
+            # Hunyuan requires a 16GB-class GPU, independent of model name.
             # Vast reports GPU and system RAM in MB.
             gpu_ram=float(o.get("gpu_ram",0) or 0)
             cpu_ram=float(o.get("cpu_ram",0) or 0)
             disk_gb=float(o.get("disk_space",0) or 0)
             reliability=float(o.get("reliability",o.get("reliability2",0)) or 0)
             compatible=(
-                "RTX 4060 TI" in name
-                and gpu_ram >= 16*1024
+                gpu_ram >= 16*1024
+                and gpu_ram < 17*1024
                 and cpu_ram >= 48*1024
                 and disk_gb >= a.disk_gb
                 and reliability >= 0.99
@@ -150,12 +150,12 @@ def main():
             f"VAST_MARKET_SEARCH_COMPLETE returned_offers={len(offers)} "
             f"compatible_offers={len(found)} incompatible_filtered={incompatible} "
             f"blacklisted_filtered={skipped} attempted_filtered={transient_skipped} "
-            f"search_limit=1000 gpu_model=RTX_4060_Ti_16GB",
+            f"search_limit=1000 gpu_class=16GB_all_models",
             flush=True
         )
         return found
     candidates=find_candidates()
-    if not candidates: raise SystemExit("No verified RTX 4060 Ti 16GB offer meets all limits. No rental made.")
+    if not candidates: raise SystemExit("No verified 16GB GPU offer meets all limits. No rental made.")
     out=Path(a.output_dir); out.mkdir(parents=True,exist_ok=True)
     temp=Path(tempfile.mkdtemp(prefix="neo-hunyuan-")); instance=None; agent=False
     try:
