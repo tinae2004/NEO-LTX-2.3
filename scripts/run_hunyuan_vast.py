@@ -399,30 +399,55 @@ PY"""
                               timeout=min(30,remaining_seconds("secure Hugging Face token transfer")))
             if token_write.returncode:
                 raise RuntimeError("Could not securely transfer Hugging Face token to GPU.")
-        # Stream remote generation output directly into the Actions log.
+        # Detach the GPU workload from the SSH session. If Actions/SSH briefly
+        # disconnects, the remote download keeps running and HF partial files
+        # remain resumable on this instance's local disk.
         script = "cd /workspace/neo && chmod +x scripts/run_hunyuan_t2v_16gb.sh && " + "./scripts/run_hunyuan_t2v_16gb.sh " + shlex.quote(a.prompt)
-        remote_cmd = (
+        status_file = f"/tmp/neo-hunyuan-generation-{instance}.exit"
+        pid_file = f"/tmp/neo-hunyuan-generation-{instance}.pid"
+        log_file = "/tmp/neo-hunyuan-generation.log"
+        launch = (
             ('if [ -f '+shlex.quote(hf_token_file)+' ]; then export HF_TOKEN="$(cat '+shlex.quote(hf_token_file)+')"; rm -f '+shlex.quote(hf_token_file)+'; fi; ' if hf_token else '') +
-            'LOG=/tmp/neo-hunyuan-generation.log; '
-            '(' + script + ') > >(tee "$LOG") 2>&1 & PID=$!; '
-            '(while kill -0 "$PID" 2>/dev/null; do '
-            'echo "[GPU_TELEMETRY]"; '
-            'nvidia-smi --query-gpu=name,utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader 2>&1; '
-            'echo "[MODEL_DOWNLOAD_TELEMETRY]"; '
-            'du -sb /workspace/neo-data/models/hunyuanvideo15/ckpts 2>/dev/null || true; '
-            'df -h /workspace/neo-data 2>/dev/null | tail -n 1; '
-            'IFACE=$(ip -o route show default 2>/dev/null | awk \'{print $5; exit}\'); '
-            'if [ -n "$IFACE" ]; then RX=$(cat /sys/class/net/"$IFACE"/statistics/rx_bytes 2>/dev/null || echo 0); TX=$(cat /sys/class/net/"$IFACE"/statistics/tx_bytes 2>/dev/null || echo 0); '
-            'if [ -n "$PREV_RX" ]; then DELTA=$((RX-PREV_RX)); RATE=$(awk -v d="$DELTA" \'BEGIN {printf "%.2f", d/20/1048576}\'); TOTAL_GB=$(awk -v r="$RX" \'BEGIN {printf "%.3f", r/1073741824}\'); echo "[NETWORK_SPEED] iface=$IFACE download_MBps=$RATE total_rx_GB=$TOTAL_GB"; '
-            'else echo "[NETWORK_SPEED] iface=$IFACE measuring_first_interval"; fi; PREV_RX=$RX; fi; '
-            'sleep 20; done) & MONITOR=$!; '
-            'wait "$PID"; RC=$?; kill "$MONITOR" 2>/dev/null; '
-            'wait "$MONITOR" 2>/dev/null; exit "$RC"'
+            'rm -f '+shlex.quote(status_file)+' '+shlex.quote(pid_file)+'; '
+            'nohup bash -lc '+shlex.quote(script+'; rc=$?; printf "%s\\n" "$rc" > '+shlex.quote(status_file)+'; exit "$rc"')+
+            ' > '+shlex.quote(log_file)+' 2>&1 < /dev/null & echo $! > '+shlex.quote(pid_file)+'; '
+            'echo HUNYUAN_DETACHED_PID=$(cat '+shlex.quote(pid_file)+')'
         )
+        launched=run(ssh_base+["bash -lc "+shlex.quote(launch)],env=env,capture_output=True,
+                     timeout=min(45,remaining_seconds("detached GPU job launch")),check=False)
+        if launched.returncode:
+            raise RuntimeError("Could not start detached Hunyuan job: "+(launched.stderr or launched.stdout or "")[-1000:])
+        print((launched.stdout or "").strip(),flush=True)
         remaining=remaining_seconds("remote dependency installation, model downloads and video generation")
-        print(f"STARTING_HUNYUAN_GENERATION_WITH_LIVE_LOGS_AND_GPU_TELEMETRY remaining_seconds={remaining:.1f}",flush=True)
-        result=run(ssh_base+["bash -lc "+shlex.quote(remote_cmd)],env=env,timeout=remaining,check=False)
-        if result.returncode: raise RuntimeError(f"Hunyuan generation exited with code {result.returncode}")
+        print(f"STARTING_HUNYUAN_GENERATION_WITH_RECONNECTABLE_LOG_POLLING remaining_seconds={remaining:.1f}",flush=True)
+        last_tail=""
+        while True:
+            remaining=remaining_seconds("remote dependency installation, model downloads and video generation")
+            poll_cmd=(
+                'echo "[GPU_TELEMETRY]"; nvidia-smi --query-gpu=name,utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader 2>&1; '
+                'echo "[MODEL_DOWNLOAD_TELEMETRY]"; du -sb /workspace/neo-data/models/hunyuanvideo15/ckpts 2>/dev/null || true; df -h /workspace/neo-data 2>/dev/null | tail -n 1; '
+                'echo "[REMOTE_LOG_TAIL]"; tail -n 35 '+shlex.quote(log_file)+' 2>/dev/null || true; '
+                'if [ -f '+shlex.quote(status_file)+' ]; then echo HUNYUAN_EXIT_CODE=$(cat '+shlex.quote(status_file)+'); else echo HUNYUAN_STILL_RUNNING; fi'
+            )
+            poll=run(ssh_base+["bash -lc "+shlex.quote(poll_cmd)],env=env,capture_output=True,
+                     timeout=min(45,remaining),check=False)
+            if poll.returncode:
+                print(f"SSH_POLL_DISCONNECTED exit_code={poll.returncode}; remote GPU job remains detached; reconnecting.",flush=True)
+                time.sleep(min(10,remaining_seconds("SSH reconnect wait")))
+                ssh_base,probe_output=discover_ssh(get_instance())
+                if not ssh_base:
+                    print("SSH_RECONNECT_PENDING; retrying without restarting model download.",flush=True)
+                    time.sleep(min(10,remaining_seconds("SSH reconnect wait")))
+                    continue
+                continue
+            output=poll.stdout or ""
+            print(output,flush=True)
+            match=re.search(r"HUNYUAN_EXIT_CODE=(-?\\d+)",output)
+            if match:
+                rc=int(match.group(1))
+                if rc: raise RuntimeError(f"Hunyuan generation exited with code {rc}")
+                break
+            time.sleep(min(20,remaining_seconds("remote job polling")))
         found=run(ssh_base+["bash -lc "+shlex.quote("find /workspace/neo-data/outputs/hunyuan -maxdepth 1 -type f -name '*.mp4' -print -quit")],env=env,capture_output=True,timeout=remaining_seconds("generated video lookup")).stdout.strip()
         if not found: raise RuntimeError("Generation completed but no MP4 was found.")
         local=out/"hunyuan_t2v.mp4"
