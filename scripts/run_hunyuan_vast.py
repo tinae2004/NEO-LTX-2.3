@@ -235,11 +235,11 @@ def main():
         print("STARTING_PRE_DOWNLOAD_SPEED_TEST threshold_MBps=65 test_bytes=134217728",flush=True)
         speed_script = r"""python3 - <<'PY'
 import concurrent.futures, time, urllib.request
-URL='https://speed.cloudflare.com/__down?bytes=33554432'
+URL='https://speed.cloudflare.com/__down?bytes=16777216'
 def fetch(_):
     req=urllib.request.Request(URL,headers={'User-Agent':'NEO-Hunyuan-Network-Probe/1.0','Cache-Control':'no-cache'})
     start=time.monotonic(); total=0
-    with urllib.request.urlopen(req,timeout=25) as response:
+    with urllib.request.urlopen(req,timeout=15) as response:
         while True:
             chunk=response.read(1024*1024)
             if not chunk: break
@@ -252,21 +252,32 @@ elapsed=time.monotonic()-start
 total=sum(x[0] for x in results)
 mbps=(total/1_000_000)/elapsed if elapsed>0 else 0
 print(f'PRE_DOWNLOAD_SPEED_TEST bytes={total} elapsed_seconds={elapsed:.3f} download_MBps={mbps:.2f}',flush=True)
-if total < 120*1024*1024:
+if total < 60*1024*1024:
     raise SystemExit(f'SLOW_GPU_HOST: incomplete speed test ({total} bytes); rejecting host')
 if mbps < 65:
     raise SystemExit(f'SLOW_GPU_HOST: {mbps:.2f} MB/s is below the strict 65 MB/s minimum')
 PY"""
-        speed_result=run(ssh_base+["bash -lc "+shlex.quote(speed_script)],env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,check=False,timeout=min(50,remaining_seconds("pre-download network speed test")))
-        print(speed_result.stdout or "",flush=True)
-        if speed_result.returncode:
-            match=re.search(r"download_MBps=([0-9.]+)",speed_result.stdout or "")
+        print("STARTING_PRE_DOWNLOAD_SPEED_TEST threshold_MBps=65 test_bytes=67108864 max_seconds=40",flush=True)
+        try:
+            speed_result=run(ssh_base+["bash -lc "+shlex.quote(speed_script)],env=env,
+                             stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,
+                             check=False,timeout=min(40,remaining_seconds("pre-download network speed test")))
+            speed_output=speed_result.stdout or ""
+            speed_failed=(speed_result.returncode != 0)
+        except subprocess.TimeoutExpired as speed_timeout:
+            raw=speed_timeout.stdout or ""
+            speed_output=raw.decode("utf-8",errors="replace") if isinstance(raw,bytes) else str(raw)
+            speed_failed=True
+            print("PRE_DOWNLOAD_SPEED_TEST_TIMEOUT: host failed the 40-second admission test.",flush=True)
+        print(speed_output,flush=True)
+        if speed_failed:
+            match=re.search(r"download_MBps=([0-9.]+)",speed_output)
             measured=float(match.group(1)) if match else 0.0
-            # A host is admissible only after a complete benchmark proves >=65 MB/s.
-            # Any failed/incomplete probe is rejected, blacklisted and retried.
+            # Timeouts, incomplete transfers and slow throughput all follow
+            # the same safe path: persist host blacklist, destroy, then retry.
             persist_blacklist(selected,measured)
-            print(f"SLOW_HOST_RETRY_REQUIRED measured_MBps={measured:.2f} threshold_MBps=65",flush=True)
-            raise RuntimeError(f"Host failed strict 65 MB/s admission (measured {measured:.2f} MB/s or incomplete/failed test). Host blacklisted; trying another GPU host.")
+            print(f"SLOW_HOST_RETRY_REQUIRED measured_MBps={measured:.2f} threshold_MBps=65 reason=timeout_or_failed_probe",flush=True)
+            raise RuntimeError(f"Host failed strict 65 MB/s admission (measured {measured:.2f} MB/s or timed out/incomplete). Host blacklisted; trying another GPU host.")
         source=subprocess.Popen(["git","archive","--format=tar.gz","HEAD"],stdout=subprocess.PIPE)
         recv=subprocess.Popen(ssh_base+["bash -lc "+shlex.quote("mkdir -p /workspace/neo && tar -xzf - -C /workspace/neo")],stdin=source.stdout)
         source.stdout.close()
