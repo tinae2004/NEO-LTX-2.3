@@ -201,8 +201,12 @@ if [[ ! -f "$MODEL_DIR/text_encoder/byt5-small/config.json" ]]; then
 fi
 
 if [[ ! -d "$MODEL_DIR/text_encoder/Glyph-SDXL-v2/checkpoints" ]]; then
-  echo "[6/7] DOWNLOADING GLYPH-SDXL-V2 ASSETS..."
-  modelscope download --model AI-ModelScope/Glyph-SDXL-v2 --local_dir "$MODEL_DIR/text_encoder/Glyph-SDXL-v2"
+  echo "[6/7] DOWNLOADING GLYPH-SDXL-V2 ASSETS FROM HUGGING FACE..."
+  "$PYTHON_BIN" "$SCRIPT_DIR/hf_download_with_progress.py" AI-ModelScope/Glyph-SDXL-v2 "$MODEL_DIR/text_encoder/Glyph-SDXL-v2"
+  test -d "$MODEL_DIR/text_encoder/Glyph-SDXL-v2/checkpoints" || {
+    echo "ERROR: Glyph-SDXL-v2 download completed but expected checkpoints directory is missing."
+    exit 1
+  }
   echo "GLYPH_DOWNLOAD_COMPLETE"
 fi
 
