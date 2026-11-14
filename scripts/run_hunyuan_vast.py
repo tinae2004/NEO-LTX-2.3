@@ -175,20 +175,41 @@ def main():
             return x if isinstance(x,dict) else {}
         def stage(message):
             print(f"[{time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())}] {message}",flush=True)
-        def discover_ssh():
-            value=run(["vastai","ssh-url",str(instance)],env=env,capture_output=True,
-                      check=False,timeout=min(18,remaining_seconds("SSH endpoint discovery"))).stdout.strip()
-            if not value: return None
+        def discover_ssh(st):
             opts=["-i",str(kp),"-o","IdentitiesOnly=yes","-o","StrictHostKeyChecking=no",
                   "-o","UserKnownHostsFile=/dev/null","-o","ConnectTimeout=6",
                   "-o","ServerAliveInterval=5","-o","ServerAliveCountMax=1"]
-            if value.startswith("ssh://"):
-                from urllib.parse import urlparse
-                u=urlparse(value)
-                return ["ssh",*opts,"-p",str(u.port),f"{u.username or 'root'}@{u.hostname}"]
-            toks=shlex.split(value)
-            toks=toks[1:] if toks and toks[0]=="ssh" else toks
-            return ["ssh",*opts,*toks] if toks else None
+            # Prefer the live SSH host/port returned by the instance record.
+            # Vast's ssh-url CLI can briefly return a stale public-IP mapping
+            # while the API already advertises the current ssh*.vast.ai endpoint.
+            host=str(st.get("ssh_host") or "").strip()
+            port=st.get("ssh_port")
+            candidates=[]
+            if host and port:
+                candidates.append(["ssh",*opts,"-p",str(port),f"root@{host}"])
+            value=run(["vastai","ssh-url",str(instance)],env=env,capture_output=True,
+                      check=False,timeout=min(18,remaining_seconds("SSH endpoint discovery"))).stdout.strip()
+            if value:
+                if value.startswith("ssh://"):
+                    from urllib.parse import urlparse
+                    u=urlparse(value)
+                    cli=["ssh",*opts,"-p",str(u.port),f"{u.username or 'root'}@{u.hostname}"]
+                else:
+                    toks=shlex.split(value)
+                    toks=toks[1:] if toks and toks[0]=="ssh" else toks
+                    cli=["ssh",*opts,*toks] if toks else None
+                if cli and cli not in candidates:
+                    candidates.append(cli)
+            for candidate in candidates:
+                target=" ".join(shlex.quote(x) for x in candidate[-3:])
+                stage(f"SSH_ENDPOINT_CANDIDATE source={'instance_api' if candidate is candidates[0] and host and port else 'vastai_ssh_url'} target={target}")
+                probe=run(candidate+["nvidia-smi"],env=env,capture_output=True,
+                          check=False,timeout=min(10,remaining_seconds("SSH/NVIDIA endpoint probe")))
+                if probe.returncode==0 and "NVIDIA-SMI" in (probe.stdout or ""):
+                    return candidate,probe.stdout
+                detail=(probe.stderr or probe.stdout or "SSH not ready").strip().replace("\\n"," ")[:300]
+                stage(f"SSH_ENDPOINT_REJECTED exit_code={probe.returncode} detail={detail}")
+            return None,None
         # Do not trust the Vast status label alone: some hosts remain "loading"
         # after SSH and the GPU are already usable. Probe SSH/NVIDIA in parallel
         # with status polling and accept a verified GPU as the readiness signal.
@@ -215,20 +236,13 @@ def main():
                 raise RuntimeError(f"Instance failed: actual_status={actual} status={generic} cur_state={cur}")
             stage("SSH_ENDPOINT_DISCOVERY")
             try:
-                candidate=discover_ssh()
+                candidate,probe_output=discover_ssh(st)
                 if candidate:
-                    stage("SSH_PROBE_START")
-                    probe=run(candidate+["nvidia-smi"],env=env,capture_output=True,
-                               check=False,timeout=min(18,remaining_seconds("SSH/NVIDIA preflight")))
-                    if probe.returncode==0 and "NVIDIA-SMI" in (probe.stdout or ""):
-                        ssh_base=candidate
-                        stage("GPU_READY_SSH_AND_NVIDIA_VERIFIED status_label="+status)
-                        print(probe.stdout,flush=True)
-                        break
-                    detail=(probe.stderr or probe.stdout or "SSH not ready").strip().replace("\\n"," ")[:500]
-                    stage(f"SSH_PROBE_NOT_READY exit_code={probe.returncode} detail={detail}")
-                else:
-                    stage("SSH_ENDPOINT_NOT_AVAILABLE_YET")
+                    ssh_base=candidate
+                    stage("GPU_READY_SSH_AND_NVIDIA_VERIFIED status_label="+status)
+                    print(probe_output,flush=True)
+                    break
+                stage("SSH_ENDPOINTS_NOT_READY_YET")
             except subprocess.TimeoutExpired:
                 stage("SSH_PROBE_TIMEOUT; continuing boot checks")
             except Exception as probe_error:
