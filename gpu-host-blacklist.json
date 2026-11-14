@@ -1,19 +1,19 @@
 {
   "hosts": [
     {
-      "machine_id": "138771",
-      "host_id": "410852",
+      "machine_id": "148540",
+      "host_id": "60685",
       "geolocation": {
-        "raw": "China, CN"
+        "raw": "Malaysia, MY"
       },
-      "gpu_name": "RTX 4060 Ti",
-      "cpu_name": "Xeon\u00ae E5-2673 v4 ",
+      "gpu_name": "RTX 5060 Ti",
+      "cpu_name": "AMD EPYC 7B13 64-Core Processor",
       "cpu_arch": "amd64",
-      "fingerprint": "138771|410852||||RTX 4060 Ti|Xeon\u00ae E5-2673 v4 |amd64",
+      "fingerprint": "148540|60685||||RTX 5060 Ti|AMD EPYC 7B13 64-Core Processor|amd64",
       "reason": "download speed below 65 MB/s",
-      "measured_MBps": 16.45,
+      "measured_MBps": 51.2,
       "threshold_MBps": 65,
-      "blacklisted_at_utc": "2026-11-14T21:08:11Z"
+      "blacklisted_at_utc": "2026-11-14T23:00:24Z"
     }
   ]
 }
