@@ -35,6 +35,9 @@ def main():
         if left<=0:
             raise TimeoutError(f"Total GPU rental time cap reached before {stage}.")
         return min(left,cap) if cap is not None else left
+    hf_token=os.environ.get("HF_TOKEN","").strip()
+    if not hf_token:
+        raise SystemExit("HF_TOKEN secret is missing. Add the Hugging Face read token as repository secret HF_TOKEN before renting a GPU.")
     key=os.environ.get("VAST_API_KEY","").strip()
     if not key: raise SystemExit("VAST_API_KEY secret is missing.")
     s=requests.Session(); s.headers.update({"Authorization":f"Bearer {key}","Content-Type":"application/json"})
@@ -423,13 +426,18 @@ PY"""
         last_tail=""
         while True:
             remaining=remaining_seconds("remote dependency installation, model downloads and video generation")
+            if not ssh_base:
+                print("SSH_ENDPOINT_UNAVAILABLE; retrying discovery without restarting remote job.",flush=True)
+                time.sleep(min(10,remaining_seconds("SSH reconnect wait")))
+                ssh_base,probe_output=discover_ssh(get_instance())
+                continue
             poll_cmd=(
                 'echo "[GPU_TELEMETRY]"; nvidia-smi --query-gpu=name,utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader 2>&1; '
                 'echo "[MODEL_DOWNLOAD_TELEMETRY]"; du -sb /workspace/neo-data/models/hunyuanvideo15/ckpts 2>/dev/null || true; df -h /workspace/neo-data 2>/dev/null | tail -n 1; '
                 'echo "[REMOTE_LOG_TAIL]"; tail -n 35 '+shlex.quote(log_file)+' 2>/dev/null || true; '
                 'if [ -f '+shlex.quote(status_file)+' ]; then echo HUNYUAN_EXIT_CODE=$(cat '+shlex.quote(status_file)+'); else echo HUNYUAN_STILL_RUNNING; fi'
             )
-            poll=run(ssh_base+["bash -lc "+shlex.quote(poll_cmd)],env=env,capture_output=True,
+            poll=run(list(ssh_base)+["bash -lc "+shlex.quote(poll_cmd)],env=env,capture_output=True,
                      timeout=min(45,remaining),check=False)
             if poll.returncode:
                 print(f"SSH_POLL_DISCONNECTED exit_code={poll.returncode}; remote GPU job remains detached; reconnecting.",flush=True)
@@ -458,10 +466,10 @@ PY"""
     except Exception as exc:
         failure = traceback.format_exc()
         # Preserve the actual remote child-process log for DeepSeek before teardown.
-        if instance is not None and "ssh_base" in locals():
+        if instance is not None and locals().get("ssh_base"):
             try:
                 remote_log = run(
-                    ssh_base + ["bash -lc " + shlex.quote("if [ -f /tmp/neo-hunyuan-generation.log ]; then tail -n 180 /tmp/neo-hunyuan-generation.log; else echo REMOTE_GENERATION_LOG_NOT_FOUND; fi")],
+                    list(ssh_base) + ["bash -lc " + shlex.quote("if [ -f /tmp/neo-hunyuan-generation.log ]; then tail -n 180 /tmp/neo-hunyuan-generation.log; else echo REMOTE_GENERATION_LOG_NOT_FOUND; fi")],
                     env=env, capture_output=True, text=True, check=False, timeout=25
                 )
                 remote_tail = (remote_log.stdout or "")[-16000:]
