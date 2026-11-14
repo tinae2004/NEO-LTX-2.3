@@ -67,12 +67,13 @@ class HunyuanRegressionTests(unittest.TestCase):
         self.assertIn('"rentable":{"eq":True}', search_block)
         self.assertIn('"verified":{"eq":True}', search_block)
         self.assertNotIn('"gpu_name":', search_block)
-        self.assertIn("gpu_model=RTX_4060_Ti_16GB", search_block)
+        self.assertIn("gpu_class=16GB_all_models", search_block)
 
     def test_compatibility_filters_use_gb_to_mb_units(self):
-        self.assertIn('"RTX 4060 TI" in name', RUNNER)
+        self.assertNotIn('"RTX 4060 TI" in name', RUNNER)
         self.assertIn("gpu_ram >= 16*1024", RUNNER)
-        self.assertIn("No verified RTX 4060 Ti 16GB offer", RUNNER)
+        self.assertIn("gpu_ram < 17*1024", RUNNER)
+        self.assertIn("No verified 16GB GPU offer", RUNNER)
         self.assertIn("cpu_ram >= 48*1024", RUNNER)
         self.assertIn("disk_gb >= a.disk_gb", RUNNER)
         self.assertIn("reliability >= 0.99", RUNNER)
