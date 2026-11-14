@@ -126,7 +126,13 @@ def main():
             cpu_ram=float(o.get("cpu_ram",0) or 0)
             disk_gb=float(o.get("disk_space",0) or 0)
             reliability=float(o.get("reliability",o.get("reliability2",0)) or 0)
+            gpu_name=str(o.get("gpu_name","")).upper()
+            # NEO's selected PyTorch/CUDA image requires sm_75+. Restrict
+            # this 16GB workflow to RTX-class cards and explicitly exclude
+            # Tesla/V100 offers, which can pass VRAM but fail CUDA kernels.
+            is_supported_rtx=("RTX" in gpu_name and "TESLA" not in gpu_name and "V100" not in gpu_name)
             checks={
+                "gpu_family":is_supported_rtx,
                 "vram":15.5*1024 <= gpu_ram < 17*1024,
                 "system_ram":cpu_ram >= 48*1024,
                 "disk":disk_gb >= a.disk_gb,
