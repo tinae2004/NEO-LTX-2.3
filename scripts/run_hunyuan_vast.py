@@ -101,45 +101,43 @@ def main():
         blacklist_path.write_text(json.dumps(blacklist_data, indent=2) + "\n")
         print(f"GPU_HOST_BLACKLISTED machine_id={ident['machine_id']} host_id={ident['host_id']} location={json.dumps(ident['geolocation'],sort_keys=True)} gpu={ident['gpu_name']} cpu={ident['cpu_name']} speed_MBps={measured_mbps:.2f}",flush=True)
     def find_candidates():
-        # Search the broad rentable/verified Vast market first. Do NOT constrain
-        # gpu_name or hardware specs in the API query: compatibility is decided
-        # locally below, so a compatible model beyond the first few GPU types
-        # is not hidden by a narrow server-side query.
+        # Search the broad rentable/verified Vast market first. Compatibility
+        # is decided locally so GPU model names are never pre-filtered.
         offers=api("POST","/bundles/",{
             "num_gpus":{"eq":1},
             "verified":{"eq":True},"rentable":{"eq":True},"rented":{"eq":False},
             "type":"ondemand","limit":1000,
             "order":[["dph_total","asc"]]
         }).get("offers",[])
-        found=[]; skipped=0; transient_skipped=0; incompatible=0
+        found=[]; skipped=0; transient_skipped=0
+        rejected={k:0 for k in ("vram","system_ram","disk","reliability","price","budget","verification","rentable","rented")}
         for o in offers:
             offer_id=str(o.get("id",""))
             if offer_id in transient_failed_offers:
                 transient_skipped+=1
                 continue
-            name=str(o.get("gpu_name","")).upper().replace("_"," ").strip()
             rate=float(o.get("dph_total",o.get("dph",0)) or 0)
-            # Hunyuan requires a 16GB-class GPU, independent of model name.
-            # Vast reports GPU and system RAM in MB.
+            # Vast reports GPU and system RAM in MB. Nominal 16GB cards can
+            # report slightly below 16384MB due to reserved/usable memory.
             gpu_ram=float(o.get("gpu_ram",0) or 0)
             cpu_ram=float(o.get("cpu_ram",0) or 0)
             disk_gb=float(o.get("disk_space",0) or 0)
             reliability=float(o.get("reliability",o.get("reliability2",0)) or 0)
-            compatible=(
-                gpu_ram >= 16*1024
-                and gpu_ram < 17*1024
-                and cpu_ram >= 48*1024
-                and disk_gb >= a.disk_gb
-                and reliability >= 0.99
-                and rate > 0
-                and rate <= a.max_hourly_usd
-                and rate*a.max_hours*1.25 <= a.budget_usd
-                and bool(o.get("verified", o.get("verification")=="verified"))
-                and bool(o.get("rentable", True))
-                and not bool(o.get("rented", False))
-            )
-            if not compatible:
-                incompatible+=1
+            checks={
+                "vram":15.5*1024 <= gpu_ram < 17*1024,
+                "system_ram":cpu_ram >= 48*1024,
+                "disk":disk_gb >= a.disk_gb,
+                "reliability":reliability >= 0.99,
+                "price":0 < rate <= a.max_hourly_usd,
+                "budget":rate*a.max_hours*1.25 <= a.budget_usd,
+                "verification":bool(o.get("verified", o.get("verification")=="verified")),
+                "rentable":bool(o.get("rentable", True)),
+                "rented":not bool(o.get("rented", False)),
+            }
+            failed=[key for key,ok in checks.items() if not ok]
+            if failed:
+                for key in failed:
+                    rejected[key]+=1
                 continue
             if is_blacklisted(o):
                 skipped+=1
@@ -148,7 +146,7 @@ def main():
         found.sort(key=lambda x:(x[0],x[1]))
         print(
             f"VAST_MARKET_SEARCH_COMPLETE returned_offers={len(offers)} "
-            f"compatible_offers={len(found)} incompatible_filtered={incompatible} "
+            f"compatible_offers={len(found)} rejected_by_filter={json.dumps(rejected,sort_keys=True)} "
             f"blacklisted_filtered={skipped} attempted_filtered={transient_skipped} "
             f"search_limit=1000 gpu_class=16GB_all_models",
             flush=True
