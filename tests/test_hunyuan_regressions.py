@@ -91,6 +91,10 @@ class HunyuanRegressionTests(unittest.TestCase):
         self.assertIn('"TESLA" not in gpu_name', RUNNER)
         self.assertIn('"V100" not in gpu_name', RUNNER)
 
+    def test_gpu_family_filter_has_rejection_counter(self):
+        self.assertIn('"gpu_family":is_supported_rtx', RUNNER)
+        self.assertIn('"gpu_family","vram"', RUNNER)
+
     def test_compatibility_filters_use_gb_to_mb_units(self):
         self.assertNotIn('"RTX 4060 TI" in name', RUNNER)
         self.assertIn("15.5*1024 <= gpu_ram < 17*1024", RUNNER)
