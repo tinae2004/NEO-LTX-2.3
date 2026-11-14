@@ -10,6 +10,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = (ROOT / "scripts/run_hunyuan_vast.py").read_text()
 DOWNLOADER = (ROOT / "scripts/hf_download_with_progress.py").read_text()
+REMOTE_SCRIPT = (ROOT / "scripts/run_hunyuan_t2v_16gb.sh").read_text()
 WORKFLOW = (ROOT / ".github/workflows/hunyuan-t2v-16gb.yml").read_text()
 LEDGER = json.loads((ROOT / "hunyuan-failure-ledger.json").read_text())
 
@@ -49,6 +50,19 @@ class HunyuanRegressionTests(unittest.TestCase):
     def test_workflow_passes_github_context(self):
         self.assertIn("GITHUB_TOKEN: ${{ github.token }}", WORKFLOW)
         self.assertIn("GITHUB_REPOSITORY: ${{ github.repository }}", WORKFLOW)
+
+    def test_download_is_first_after_network_gate_and_before_setup(self):
+        self.assertLess(REMOTE_SCRIPT.index('DOWNLOADING HUNYUAN 1.5 480P T2V'), REMOTE_SCRIPT.index('CHECKING PREINSTALLED PYTORCH/CUDA STACK'))
+        self.assertLess(REMOTE_SCRIPT.index('DOWNLOADING HUNYUAN 1.5 480P T2V'), REMOTE_SCRIPT.index('Cloning official Tencent HunyuanVideo-1.5 source'))
+        self.assertLess(REMOTE_SCRIPT.index('DOWNLOADING HUNYUAN 1.5 480P T2V'), REMOTE_SCRIPT.index('pip install --progress-bar on -r'))
+        self.assertIn('--max-workers 4', REMOTE_SCRIPT)
+        self.assertNotIn('HF_XET_HIGH_PERFORMANCE', REMOTE_SCRIPT)
+        self.assertNotIn('pip install --upgrade', REMOTE_SCRIPT)
+
+    def test_download_stall_fails_fast_for_gpu_destroy_and_retry(self):
+        self.assertIn('timeout=(20, 30)', DOWNLOADER)
+        self.assertIn('DOWNLOAD_START', DOWNLOADER)
+        self.assertIn('FILE_TRANSFER_PROGRESS', DOWNLOADER)
 
     def test_hf_download_uses_authenticated_browser_style_resolve_stream(self):
         self.assertIn("/resolve/{revision}/", DOWNLOADER)
