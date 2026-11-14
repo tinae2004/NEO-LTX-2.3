@@ -18,7 +18,7 @@ class HunyuanRegressionTests(unittest.TestCase):
     def test_slow_host_threshold_is_not_relaxed(self):
         self.assertIn("threshold_MBps=65", RUNNER)
         self.assertIn("below the strict 65 MB/s minimum", RUNNER)
-        self.assertIn('default=65.0', DOWNLOADER)
+        self.assertNotIn('min_mbps', DOWNLOADER)
 
     def test_slow_host_is_blacklisted_before_retry(self):
         self.assertIn("persist_blacklist(selected,measured)", RUNNER)
@@ -50,11 +50,12 @@ class HunyuanRegressionTests(unittest.TestCase):
         self.assertIn("GITHUB_TOKEN: ${{ github.token }}", WORKFLOW)
         self.assertIn("GITHUB_REPOSITORY: ${{ github.repository }}", WORKFLOW)
 
-    def test_real_hf_transfer_speed_is_independently_checked(self):
-        self.assertIn("HF_REAL_DOWNLOAD_SPEED_MBPS", DOWNLOADER)
-        self.assertIn("SLOW_HF_DOWNLOAD_HOST", DOWNLOADER)
-        self.assertIn("args.min_mbps", DOWNLOADER)
-
+    def test_hf_download_uses_authenticated_browser_style_resolve_stream(self):
+        self.assertIn("/resolve/{revision}/", DOWNLOADER)
+        self.assertIn("Range", DOWNLOADER)
+        self.assertIn("HF_TOKEN", DOWNLOADER)
+        self.assertIn("iter_content", DOWNLOADER)
+        self.assertNotIn("snapshot_download(", DOWNLOADER)
 
     def test_remote_download_survives_ssh_disconnect(self):
         self.assertIn("nohup bash -lc", RUNNER)
@@ -64,7 +65,7 @@ class HunyuanRegressionTests(unittest.TestCase):
         self.assertIn("without restarting model download", RUNNER)
 
     def test_huggingface_download_reuses_partial_files(self):
-        self.assertIn("snapshot_download(", DOWNLOADER)
+        self.assertIn("Range", DOWNLOADER)
         self.assertIn("local_dir=str(args.local_dir)", DOWNLOADER)
         self.assertIn("DOWNLOAD_START", DOWNLOADER)
 
