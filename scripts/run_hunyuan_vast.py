@@ -166,30 +166,70 @@ def main():
             d=api("GET",f"/instances/{instance}/",timeout=min(15,remaining_seconds("instance status check"))); x=d.get("instances",d)
             if isinstance(x,list): return next((z for z in x if int(z.get("id",-1))==int(instance)),{})
             return x if isinstance(x,dict) else {}
-        ready_deadline=min(deadline,time.monotonic()+1200)
-        while time.monotonic()<ready_deadline:
-            st=get_instance(); status=str(st.get("actual_status",st.get("status",""))).lower()
-            print(f"INSTANCE_STATUS={status}",flush=True)
-            if status=="running": break
-            if status in ("dead","error","exited","deleted","stopped"): raise RuntimeError(f"Instance failed: {status}")
-            time.sleep(min(15,remaining_seconds("GPU boot wait")))
-        else: raise TimeoutError("GPU did not become running within the startup limit or the one-hour rental deadline.")
-        ssh_base=None; ssh_deadline=min(deadline,time.monotonic()+600)
-        while time.monotonic()<ssh_deadline:
-            value=run(["vastai","ssh-url",str(instance)],env=env,capture_output=True,timeout=min(30,remaining_seconds("SSH endpoint discovery"))).stdout.strip()
-            opts=["-i",str(kp),"-o","IdentitiesOnly=yes","-o","StrictHostKeyChecking=no","-o","UserKnownHostsFile=/dev/null","-o","ConnectTimeout=12"]
+        def stage(message):
+            print(f"[{time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())}] {message}",flush=True)
+        def discover_ssh():
+            value=run(["vastai","ssh-url",str(instance)],env=env,capture_output=True,
+                      check=False,timeout=min(18,remaining_seconds("SSH endpoint discovery"))).stdout.strip()
+            if not value: return None
+            opts=["-i",str(kp),"-o","IdentitiesOnly=yes","-o","StrictHostKeyChecking=no",
+                  "-o","UserKnownHostsFile=/dev/null","-o","ConnectTimeout=6",
+                  "-o","ServerAliveInterval=5","-o","ServerAliveCountMax=1"]
             if value.startswith("ssh://"):
                 from urllib.parse import urlparse
-                u=urlparse(value); ssh_base=["ssh",*opts,"-p",str(u.port),f"{u.username or 'root'}@{u.hostname}"]
-            else:
-                toks=shlex.split(value); toks=toks[1:] if toks and toks[0]=="ssh" else toks
-                ssh_base=["ssh",*opts,*toks] if toks else None
-            if ssh_base:
-                probe=run(ssh_base+["nvidia-smi"],env=env,capture_output=True,check=False,timeout=min(25,remaining_seconds("SSH/NVIDIA preflight")))
-                if probe.returncode==0: print(probe.stdout,flush=True); break
-                ssh_base=None
-            time.sleep(min(10,remaining_seconds("SSH availability wait")))
-        if not ssh_base: raise TimeoutError("SSH/NVIDIA preflight never became ready before the rental deadline.")
+                u=urlparse(value)
+                return ["ssh",*opts,"-p",str(u.port),f"{u.username or 'root'}@{u.hostname}"]
+            toks=shlex.split(value)
+            toks=toks[1:] if toks and toks[0]=="ssh" else toks
+            return ["ssh",*opts,*toks] if toks else None
+        # Do not trust the Vast status label alone: some hosts remain "loading"
+        # after SSH and the GPU are already usable. Probe SSH/NVIDIA in parallel
+        # with status polling and accept a verified GPU as the readiness signal.
+        ready_deadline=min(deadline,time.monotonic()+1200)
+        ssh_base=None
+        last_status=""
+        while time.monotonic()<ready_deadline:
+            st=get_instance()
+            actual=str(st.get("actual_status") or "").lower()
+            generic=str(st.get("status") or "").lower()
+            cur=str(st.get("cur_state") or "").lower()
+            status=actual or generic or cur or "unknown"
+            if status!=last_status:
+                stage(f"GPU_STATUS_CHANGED actual_status={actual or 'n/a'} status={generic or 'n/a'} cur_state={cur or 'n/a'}")
+                last_status=status
+            stage("GPU_INSTANCE_DETAILS "+json.dumps({
+                "id":st.get("id",instance),"gpu_name":st.get("gpu_name") or selected.get("gpu_name"),
+                "gpu_ram":st.get("gpu_ram"),"public_ipaddr":st.get("public_ipaddr"),
+                "ssh_host":st.get("ssh_host"),"ssh_port":st.get("ssh_port"),
+                "intended_status":st.get("intended_status"),"status":generic,
+                "actual_status":actual,"cur_state":cur
+            },sort_keys=True,default=str))
+            if status in ("dead","error","exited","deleted","stopped"):
+                raise RuntimeError(f"Instance failed: actual_status={actual} status={generic} cur_state={cur}")
+            stage("SSH_ENDPOINT_DISCOVERY")
+            try:
+                candidate=discover_ssh()
+                if candidate:
+                    stage("SSH_PROBE_START")
+                    probe=run(candidate+["nvidia-smi"],env=env,capture_output=True,
+                               check=False,timeout=min(18,remaining_seconds("SSH/NVIDIA preflight")))
+                    if probe.returncode==0 and "NVIDIA-SMI" in (probe.stdout or ""):
+                        ssh_base=candidate
+                        stage("GPU_READY_SSH_AND_NVIDIA_VERIFIED status_label="+status)
+                        print(probe.stdout,flush=True)
+                        break
+                    detail=(probe.stderr or probe.stdout or "SSH not ready").strip().replace("\\n"," ")[:500]
+                    stage(f"SSH_PROBE_NOT_READY exit_code={probe.returncode} detail={detail}")
+                else:
+                    stage("SSH_ENDPOINT_NOT_AVAILABLE_YET")
+            except subprocess.TimeoutExpired:
+                stage("SSH_PROBE_TIMEOUT; continuing boot checks")
+            except Exception as probe_error:
+                stage(f"SSH_PROBE_ERROR {type(probe_error).__name__}: {probe_error}")
+            stage("WAITING_FOR_GPU_READINESS next_check_seconds=10")
+            time.sleep(min(10,remaining_seconds("GPU boot and SSH readiness wait")))
+        if not ssh_base:
+            raise TimeoutError("GPU did not pass SSH plus nvidia-smi readiness before the startup limit or one-hour rental deadline.")
         # Benchmark network before sending source code or downloading multi-GB models.
         # Four concurrent 32 MiB streams = 128 MiB total benchmark traffic.
         print("STARTING_PRE_DOWNLOAD_SPEED_TEST threshold_MBps=65 test_bytes=134217728",flush=True)
