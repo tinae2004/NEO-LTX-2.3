@@ -61,9 +61,29 @@ class HunyuanRegressionTests(unittest.TestCase):
             for guard in item["regression_guards"]:
                 self.assertIn(guard, test_names, f"Missing regression guard {guard} for run {item['run']}")
 
+    def test_searches_broad_market_before_local_filtering(self):
+        search_block = RUNNER.split("    def find_candidates():", 1)[1].split("    candidates=find_candidates()", 1)[0]
+        self.assertIn('"limit":1000', search_block)
+        self.assertIn('"rentable":{"eq":True}', search_block)
+        self.assertIn('"verified":{"eq":True}', search_block)
+        self.assertNotIn('"gpu_name":', search_block)
+        self.assertIn("gpu_models=all", search_block)
+
+    def test_compatibility_filters_use_gb_to_mb_units(self):
+        self.assertIn("gpu_ram >= 14*1024", RUNNER)
+        self.assertIn("cpu_ram >= 48*1024", RUNNER)
+        self.assertIn("disk_gb >= a.disk_gb", RUNNER)
+        self.assertIn("reliability >= 0.99", RUNNER)
+
+    def test_retry_requeries_broad_market_after_blacklist(self):
+        self.assertIn("candidates=find_candidates()", RUNNER)
+        self.assertIn("if refresh_round:", RUNNER)
+        self.assertIn("is_blacklisted(o)", RUNNER)
+        self.assertIn("transient_failed_offers", RUNNER)
+
     def test_ledger_preserves_the_current_failure_and_policy(self):
-        self.assertEqual(LEDGER["last_reviewed_run"], 85)
-        self.assertTrue(any(item["run"] == 85 for item in LEDGER["known_failures"]))
+        self.assertEqual(LEDGER["last_reviewed_run"], 91)
+        self.assertTrue(any(item["run"] == 91 for item in LEDGER["known_failures"]))
         self.assertTrue(any("65 MB/s" in rule for rule in LEDGER["invariants"]))
 
 
