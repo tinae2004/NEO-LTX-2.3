@@ -96,6 +96,9 @@ def main():
         if sha: payload["sha"]=sha
         saved=gh.put(url,json=payload,timeout=30)
         if not saved.ok: raise RuntimeError(f"Blacklist persistence failed: HTTP {saved.status_code} {saved.text[:500]}")
+        # Keep the checked-out runner's local copy in sync so execv retries
+        # cannot immediately rent the same host again before a new checkout.
+        blacklist_path.write_text(json.dumps(blacklist_data, indent=2) + "\\n")
         print(f"GPU_HOST_BLACKLISTED machine_id={ident['machine_id']} host_id={ident['host_id']} location={json.dumps(ident['geolocation'],sort_keys=True)} gpu={ident['gpu_name']} cpu={ident['cpu_name']} speed_MBps={measured_mbps:.2f}",flush=True)
     def find_candidates():
         offers=api("POST","/bundles/",{
