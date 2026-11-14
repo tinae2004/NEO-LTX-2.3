@@ -66,7 +66,9 @@ class HunyuanRegressionTests(unittest.TestCase):
 
     def test_huggingface_download_reuses_partial_files(self):
         self.assertIn("Range", DOWNLOADER)
-        self.assertIn("local_dir=str(args.local_dir)", DOWNLOADER)
+        self.assertIn(".incomplete", DOWNLOADER)
+        self.assertIn("partial.stat().st_size", DOWNLOADER)
+        self.assertIn("partial.replace(target)", DOWNLOADER)
         self.assertIn("DOWNLOAD_START", DOWNLOADER)
 
     def test_every_ledger_guard_has_a_test(self):
