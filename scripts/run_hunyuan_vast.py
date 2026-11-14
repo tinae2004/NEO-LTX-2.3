@@ -200,15 +200,23 @@ def main():
                     cli=["ssh",*opts,*toks] if toks else None
                 if cli and cli not in candidates:
                     candidates.append(cli)
-            for candidate in candidates:
+            for index,candidate in enumerate(candidates):
                 target=" ".join(shlex.quote(x) for x in candidate[-3:])
-                stage(f"SSH_ENDPOINT_CANDIDATE source={'instance_api' if candidate is candidates[0] and host and port else 'vastai_ssh_url'} target={target}")
-                probe=run(candidate+["nvidia-smi"],env=env,capture_output=True,
-                          check=False,timeout=min(10,remaining_seconds("SSH/NVIDIA endpoint probe")))
+                source="instance_api" if index==0 and host and port else "vastai_ssh_url"
+                stage(f"SSH_ENDPOINT_CANDIDATE source={source} target={target}")
+                try:
+                    probe=run(candidate+["nvidia-smi"],env=env,capture_output=True,
+                              check=False,timeout=min(10,remaining_seconds("SSH/NVIDIA endpoint probe")))
+                except subprocess.TimeoutExpired:
+                    stage(f"SSH_ENDPOINT_TIMEOUT source={source}; trying_next_endpoint")
+                    continue
+                except Exception as endpoint_error:
+                    stage(f"SSH_ENDPOINT_ERROR source={source} error={type(endpoint_error).__name__}: {endpoint_error}; trying_next_endpoint")
+                    continue
                 if probe.returncode==0 and "NVIDIA-SMI" in (probe.stdout or ""):
                     return candidate,probe.stdout
                 detail=(probe.stderr or probe.stdout or "SSH not ready").strip().replace("\\n"," ")[:300]
-                stage(f"SSH_ENDPOINT_REJECTED exit_code={probe.returncode} detail={detail}")
+                stage(f"SSH_ENDPOINT_REJECTED source={source} exit_code={probe.returncode} detail={detail}")
             return None,None
         # Do not trust the Vast status label alone: some hosts remain "loading"
         # after SSH and the GPU are already usable. Probe SSH/NVIDIA in parallel
