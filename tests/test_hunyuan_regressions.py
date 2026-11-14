@@ -71,8 +71,9 @@ class HunyuanRegressionTests(unittest.TestCase):
 
     def test_compatibility_filters_use_gb_to_mb_units(self):
         self.assertNotIn('"RTX 4060 TI" in name', RUNNER)
-        self.assertIn("gpu_ram >= 16*1024", RUNNER)
-        self.assertIn("gpu_ram < 17*1024", RUNNER)
+        self.assertIn("15.5*1024 <= gpu_ram < 17*1024", RUNNER)
+        self.assertIn("rejected_by_filter=", RUNNER)
+        self.assertIn('"vram":15.5*1024 <= gpu_ram < 17*1024', RUNNER)
         self.assertIn("No verified 16GB GPU offer", RUNNER)
         self.assertIn("cpu_ram >= 48*1024", RUNNER)
         self.assertIn("disk_gb >= a.disk_gb", RUNNER)
