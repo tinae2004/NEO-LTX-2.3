@@ -51,6 +51,11 @@ class HunyuanRegressionTests(unittest.TestCase):
         self.assertIn("GITHUB_TOKEN: ${{ github.token }}", WORKFLOW)
         self.assertIn("GITHUB_REPOSITORY: ${{ github.repository }}", WORKFLOW)
 
+    def test_glyph_assets_use_huggingface_not_modelscope_cli(self):
+        self.assertIn('AI-ModelScope/Glyph-SDXL-v2', REMOTE_SCRIPT)
+        self.assertIn('hf_download_with_progress.py', REMOTE_SCRIPT)
+        self.assertNotIn('modelscope download', REMOTE_SCRIPT)
+
     def test_download_is_first_after_network_gate_and_before_setup(self):
         self.assertLess(REMOTE_SCRIPT.index('DOWNLOADING HUNYUAN 1.5 480P T2V'), REMOTE_SCRIPT.index('CHECKING PREINSTALLED PYTORCH/CUDA STACK'))
         self.assertLess(REMOTE_SCRIPT.index('DOWNLOADING HUNYUAN 1.5 480P T2V'), REMOTE_SCRIPT.index('Cloning official Tencent HunyuanVideo-1.5 source'))
