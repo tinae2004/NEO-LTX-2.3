@@ -113,7 +113,7 @@ def main():
             "order":[["dph_total","asc"]]
         }).get("offers",[])
         found=[]; skipped=0; transient_skipped=0
-        rejected={k:0 for k in ("vram","system_ram","disk","reliability","price","budget","verification","rentable","rented")}
+        rejected={k:0 for k in ("gpu_family","vram","system_ram","disk","reliability","price","budget","verification","rentable","rented")}
         for o in offers:
             offer_id=str(o.get("id",""))
             if offer_id in transient_failed_offers:
