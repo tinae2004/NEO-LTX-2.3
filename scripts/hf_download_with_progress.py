@@ -27,7 +27,7 @@ def download_one(repo, revision, item, dest, token, session):
         if offset:
             headers["Range"] = f"bytes={offset}-"
         try:
-            with session.get(url, headers=headers, stream=True, allow_redirects=True, timeout=(30, 180)) as response:
+            with session.get(url, headers=headers, stream=True, allow_redirects=True, timeout=(20, 30)) as response:
                 if response.status_code not in (200, 206):
                     response.raise_for_status()
                     raise RuntimeError(f"Unexpected HTTP {response.status_code}")
@@ -78,6 +78,7 @@ def main():
     files = [f for f in (info.siblings or []) if f.rfilename and matches(f.rfilename, a.allow)]
     if not files:
         raise SystemExit("No files matched the requested Hugging Face allow patterns.")
+    print(f"DOWNLOAD_START repo={a.repo_id} selected_files={len(files)} destination={a.local_dir}", flush=True)
     print("HF_TOKEN_PRESENT=1", flush=True)
     print(f"HF_AUTHENTICATED=1 repo={a.repo_id} revision={info.sha}", flush=True)
     print(f"DIRECT_RESOLVE_DOWNLOAD=1 selected_files={len(files)}", flush=True)
@@ -85,11 +86,10 @@ def main():
         print(f"DOWNLOAD_ALLOW_PATTERN {pattern}", flush=True)
     expected_total = sum(int(f.size) for f in files if getattr(f, "size", None) is not None)
     print(f"DOWNLOAD_MANIFEST files={len(files)} expected_bytes={expected_total}", flush=True)
-    session = requests.Session()
     done = total = 0
     failures = []
     with ThreadPoolExecutor(max_workers=a.max_workers) as pool:
-        futures = {pool.submit(download_one, a.repo_id, info.sha, f, a.local_dir, token, session): f.rfilename for f in files}
+        futures = {pool.submit(download_one, a.repo_id, info.sha, f, a.local_dir, token, requests.Session()): f.rfilename for f in files}
         for future in as_completed(futures):
             name = futures[future]
             try:
@@ -100,7 +100,6 @@ def main():
             except Exception as exc:
                 failures.append((name, str(exc)))
                 print(f"DOWNLOAD_FILE_FAILED file={name} error={exc}", flush=True)
-    session.close()
     if failures:
         raise SystemExit(f"Download failures: {failures[:5]}")
     print(f"DOWNLOAD_COMPLETE repo={a.repo_id} files={done} bytes={total} path={a.local_dir}", flush=True)
