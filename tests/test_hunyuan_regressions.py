@@ -85,6 +85,12 @@ class HunyuanRegressionTests(unittest.TestCase):
         self.assertNotIn('"gpu_name":', search_block)
         self.assertIn("gpu_class=16GB_all_models", search_block)
 
+    def test_gpu_market_filter_excludes_tesla_and_requires_rtx(self):
+        self.assertIn('"gpu_family":is_supported_rtx', RUNNER)
+        self.assertIn('"RTX" in gpu_name', RUNNER)
+        self.assertIn('"TESLA" not in gpu_name', RUNNER)
+        self.assertIn('"V100" not in gpu_name', RUNNER)
+
     def test_compatibility_filters_use_gb_to_mb_units(self):
         self.assertNotIn('"RTX 4060 TI" in name', RUNNER)
         self.assertIn("15.5*1024 <= gpu_ram < 17*1024", RUNNER)
