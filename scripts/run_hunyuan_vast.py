@@ -234,9 +234,9 @@ def main():
             time.sleep(min(10,remaining_seconds("GPU boot and SSH readiness wait")))
         if not ssh_base:
             raise TimeoutError("GPU did not pass SSH plus nvidia-smi readiness before the startup limit or one-hour rental deadline.")
-        # Benchmark network before sending source code or downloading multi-GB models.
-        # Four concurrent 32 MiB streams = 128 MiB total benchmark traffic.
-        print("STARTING_PRE_DOWNLOAD_SPEED_TEST threshold_MBps=65 test_bytes=134217728",flush=True)
+        # Benchmark before source transfer/model download: four concurrent 16 MiB streams.
+        # Each of three endpoint attempts is bounded to about six seconds.
+        print("STARTING_PRE_DOWNLOAD_SPEED_TEST threshold_MBps=65 max_total_bytes=67108864 endpoints=3",flush=True)
         speed_script = r"""python3 - <<'PY'
 import concurrent.futures, time, urllib.request, urllib.error
 ENDPOINTS = [
@@ -258,7 +258,7 @@ def fetch(url):
     started = time.monotonic()
     total = 0
     try:
-        with urllib.request.urlopen(req, timeout=18) as response:
+        with urllib.request.urlopen(req, timeout=6) as response:
             while total < LIMIT:
                 chunk = response.read(min(1024 * 1024, LIMIT - total))
                 if not chunk:
@@ -309,7 +309,12 @@ PY"""
             raw=speed_timeout.stdout or ""
             speed_output=raw.decode("utf-8",errors="replace") if isinstance(raw,bytes) else str(raw)
             speed_failed=True
-            print("PRE_DOWNLOAD_SPEED_TEST_TIMEOUT: host failed the 40-second admission test.",flush=True)
+            failed_offer_id=str(selected.get("id",""))
+            if failed_offer_id:
+                transient_failed_offers.add(failed_offer_id)
+                os.environ["NEO_ATTEMPTED_OFFER_IDS"]=",".join(sorted(transient_failed_offers))
+            print(f"PRE_DOWNLOAD_SPEED_TEST_TIMEOUT: inconclusive probe; retrying another offer without permanently blacklisting this host. offer_id={failed_offer_id}",flush=True)
+            speed_output += "\\nNETWORK_PROBE_TIMEOUT_RETRY_REQUIRED"
         print(speed_output,flush=True)
         if speed_failed:
             if "NETWORK_PROBE_UNAVAILABLE" in speed_output:
@@ -325,7 +330,7 @@ PY"""
             # the same safe path: persist host blacklist, destroy, then retry.
             persist_blacklist(selected,measured)
             print(f"SLOW_HOST_RETRY_REQUIRED measured_MBps={measured:.2f} threshold_MBps=65 reason=timeout_or_failed_probe",flush=True)
-            raise RuntimeError(f"Host failed strict 65 MB/s admission (measured {measured:.2f} MB/s or timed out/incomplete). Host blacklisted; trying another GPU host.")
+            raise RuntimeError(f"SLOW_HOST_RETRY_REQUIRED: host measured {measured:.2f} MB/s below 65 MB/s; host blacklisted; trying another GPU host.")
         source=subprocess.Popen(["git","archive","--format=tar.gz","HEAD"],stdout=subprocess.PIPE)
         recv=subprocess.Popen(ssh_base+["bash -lc "+shlex.quote("mkdir -p /workspace/neo && tar -xzf - -C /workspace/neo")],stdin=source.stdout)
         source.stdout.close()
@@ -394,7 +399,12 @@ PY"""
         print("NEO_HUNYUAN_FAILURE\\n"+failure, file=sys.stderr, flush=True)
         # Stop paid compute before asking DeepSeek to diagnose the failure.
         hf_download_failure = ("SLOW_HF_DOWNLOAD_HOST" in failure or "HF_DOWNLOAD_STALLED" in failure)
-        slow_host_retry = ("SLOW_HOST_RETRY_REQUIRED" in failure) or hf_download_failure or ("NETWORK_PROBE_UNAVAILABLE_RETRY_REQUIRED" in failure)
+        slow_host_retry = (
+            "SLOW_HOST_RETRY_REQUIRED" in failure
+            or "NETWORK_PROBE_UNAVAILABLE_RETRY_REQUIRED" in failure
+            or "NETWORK_PROBE_TIMEOUT_RETRY_REQUIRED" in failure
+            or hf_download_failure
+        )
         hf_speed_match = re.search(r"SLOW_HF_DOWNLOAD_HOST: ([0-9.]+) MB/s", failure)
         if instance is not None:
             try:
